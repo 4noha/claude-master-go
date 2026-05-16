@@ -109,6 +109,37 @@ func (c *Client) PushStatus(ctx context.Context, sessions []map[string]any) (cha
 	return changed, nil
 }
 
+// CreatePairing は pairings/{codeHash} に {pc, scope, expires_at} を
+// 書く（M7 Web コード認証。code 平文は保存しない）。
+func (c *Client) CreatePairing(ctx context.Context, codeHash, pc, scope string, ttl time.Duration) error {
+	_, err := c.fs.Collection("pairings").Doc(codeHash).Set(ctx, map[string]any{
+		"pc":         pc,
+		"scope":      scope,
+		"expires_at": time.Now().Add(ttl).UTC().Format(time.RFC3339),
+	})
+	return err
+}
+
+// ConsumePairing は codeHash を検索し、期限内なら pc/scope を返して
+// **doc を削除**（一回消費）。期限切れ/不在は ok=false（期限切れも
+// 掃除のため削除）。
+func (c *Client) ConsumePairing(ctx context.Context, codeHash string) (pc, scope string, ok bool, err error) {
+	ref := c.fs.Collection("pairings").Doc(codeHash)
+	snap, gerr := ref.Get(ctx)
+	if gerr != nil || !snap.Exists() {
+		return "", "", false, nil
+	}
+	d := snap.Data()
+	_, _ = ref.Delete(ctx) // 一回消費（成否問わず掃除）
+	exp, _ := d["expires_at"].(string)
+	if t, perr := time.Parse(time.RFC3339, exp); perr != nil || time.Now().After(t) {
+		return "", "", false, nil
+	}
+	p, _ := d["pc"].(string)
+	sc, _ := d["scope"].(string)
+	return p, sc, true, nil
+}
+
 // Wake は wake/{pcId} に {sid, ts} を書く（Cloud Functions / テストが
 // 呼ぶ）。対象 PC の WatchWake listener が即発火する。
 func (c *Client) Wake(ctx context.Context, targetPC, sid string) error {

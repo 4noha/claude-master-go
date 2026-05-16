@@ -198,3 +198,47 @@ func TestWatchWakeReceivesRealtimePush(t *testing.T) {
 		t.Fatal("ctx cancel しても WatchWake が戻らない")
 	}
 }
+
+// pairing（Web コード認証）を実 Firestore エミュレータで検証。
+func TestPairingCreateConsumeOnce(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-pair")
+	const h = "deadbeefhash-create-consume"
+	if err := c.CreatePairing(ctx, h, "Mac-Studio", "Mac-Studio", 10*time.Minute); err != nil {
+		t.Fatalf("CreatePairing: %v", err)
+	}
+	pc, scope, ok, err := c.ConsumePairing(ctx, h)
+	if err != nil || !ok || pc != "Mac-Studio" || scope != "Mac-Studio" {
+		t.Fatalf("初回 consume 失敗: ok=%v pc=%q scope=%q err=%v", ok, pc, scope, err)
+	}
+	// 一回消費＝2 回目は不可
+	_, _, ok2, _ := c.ConsumePairing(ctx, h)
+	if ok2 {
+		t.Fatal("pairing が一回消費されていない（再利用できた）")
+	}
+}
+
+func TestPairingExpiredRejected(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-pair2")
+	const h = "deadbeefhash-expired"
+	// 既に期限切れ（ttl 負）
+	if err := c.CreatePairing(ctx, h, "PC1", "PC1", -time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	_, _, ok, err := c.ConsumePairing(ctx, h)
+	if err != nil || ok {
+		t.Fatalf("期限切れ pairing が通った: ok=%v err=%v", ok, err)
+	}
+	// 期限切れも掃除されている（再 consume も false）
+	if _, _, ok2, _ := c.ConsumePairing(ctx, h); ok2 {
+		t.Fatal("期限切れ doc が削除されていない")
+	}
+}
+
+func TestConsumeMissingPairing(t *testing.T) {
+	_, _, ok, err := newClient(t, "pc-pair3").ConsumePairing(context.Background(), "no-such-hash")
+	if err != nil || ok {
+		t.Fatalf("不在 pairing が ok: ok=%v err=%v", ok, err)
+	}
+}
