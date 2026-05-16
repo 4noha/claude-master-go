@@ -140,6 +140,21 @@ func (c *Client) ConsumePairing(ctx context.Context, codeHash string) (pc, scope
 	return p, sc, true, nil
 }
 
+// ListSessions は pcs/{pc}/sessions/* を返す（Web /api 用。画面解釈は
+// せずメタのみ）。古い→新しい順は問わない。
+func (c *Client) ListSessions(ctx context.Context, pc string) ([]map[string]any, error) {
+	docs, err := c.fs.Collection("pcs").Doc(pc).
+		Collection("sessions").Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.Data())
+	}
+	return out, nil
+}
+
 // Wake は wake/{pcId} に {sid, ts} を書く（Cloud Functions / テストが
 // 呼ぶ）。対象 PC の WatchWake listener が即発火する。
 func (c *Client) Wake(ctx context.Context, targetPC, sid string) error {

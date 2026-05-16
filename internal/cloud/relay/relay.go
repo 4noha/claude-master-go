@@ -44,6 +44,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sid と role(source|viewer) が必要", http.StatusBadRequest)
 		return
 	}
+	s.Accept(w, r, sid, role)
+}
+
+// Accept は WS をアップグレードして sid/role でペアリング中継する
+// （Web の認証済 /ws viewer からも再利用＝relay 本体は無改変）。
+func (s *Server) Accept(w http.ResponseWriter, r *http.Request, sid, role string) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
 	if err != nil {
 		return

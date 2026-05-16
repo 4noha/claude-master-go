@@ -1,27 +1,47 @@
-// Command cloud-relay は Cloud Run 上で動く WSS バイト透過リレー。
-// internal/cloud/relay.Server をそのまま HTTP で公開する（画面解釈は
-// しない＝不変条件）。Cloud Run は min-instances=0 でスケール・トゥ・
-// ゼロ、WS 接続中のみインスタンスが温存される。1 リクエスト最大
-// 3600s（要 --timeout）→ それを超える視聴は client 側で再接続
-// （PtyProxy.Server が新規 client へ catch-up 再描画するので継続可）。
+// Command cloud-relay は Cloud Run 上で動く WSS バイト透過リレー＋
+// Web 管理 UI（M7）。relay は画面解釈をしない（不変条件）。Cloud Run
+// は min-instances=0 でスケール・トゥ・ゼロ、WS 接続中のみ温存。
+// 1 リクエスト最大 3600s（要 --timeout）→ 超過時は client 再接続。
 package main
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/4noha/claude-master-go/internal/cloud/relay"
+	"github.com/4noha/claude-master-go/internal/cloud/state"
+	"github.com/4noha/claude-master-go/internal/cloud/web"
+	"github.com/4noha/claude-master-go/internal/cloud/webauth"
 )
 
 // handler は Cloud Run サービスの http.Handler を組み立てる
 // （main から分離＝ローカルで実検証可能にするため）。
+// GCP_PROJECT と WEB_SIGNING_KEY が両方あれば Web 管理 UI を有効化し、
+// /session 以外を web へ。無ければ relay のみ（/＝health, /session）。
 func handler() http.Handler {
 	rl := relay.NewServer()
 	mux := http.NewServeMux()
-	// ヘルスは "/"。`/healthz` は Google Front End が予約・遮断する
-	// （Cloud Run 実測: /healthz は GFE 404、他パスは正常到達）ため使わない。
+	mux.Handle("/session", rl) // 既存 CLI/agent 経路（無改変・常時）
+
+	proj := os.Getenv("GCP_PROJECT")
+	key := os.Getenv("WEB_SIGNING_KEY")
+	if proj != "" && key != "" {
+		st, err := state.New(context.Background(), proj, "relay")
+		if err != nil {
+			log.Printf("web 無効（Firestore 接続失敗）: %v", err)
+		} else {
+			ws := web.New(rl, st, webauth.NewSigner(key))
+			mux.Handle("/", ws.Handler()) // /,/login,/auth,/api,/ws
+			log.Printf("web 管理 UI 有効（project=%s）", proj)
+			return mux
+		}
+	} else {
+		log.Printf("web 無効（GCP_PROJECT/WEB_SIGNING_KEY 未設定）")
+	}
+	// relay のみ: ヘルスは "/"（/healthz は Google Front End が予約・遮断）
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -30,7 +50,6 @@ func handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
 	})
-	mux.Handle("/session", rl) // GET /session?sid=&role=source|viewer を WSS 化
 	return mux
 }
 
