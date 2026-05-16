@@ -134,10 +134,10 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 			}
 			id := mgr.NewMarkedWindow(shortName(d.dir),
 				wc(d.pc, d.sid, d.dir), marker)
-			mgr.StyleWindowID(id, "fg="+colorFor(d.pc))
+			mgr.StyleWindowID(id, "bg="+colorFor(d.pc)+",fg=colour16")
 			dbg("CREATE %s/%s -> %s", d.pc, d.sid, id)
 		default:
-			mgr.StyleWindowID(ids[0], "fg="+colorFor(d.pc)) // 1 本維持
+			mgr.StyleWindowID(ids[0], "bg="+colorFor(d.pc)+",fg=colour16") // 1 本維持
 			for _, extra := range ids[1:] {
 				mgr.KillWindowID(extra) // 重複（過去 runaway）を自己修復
 			}

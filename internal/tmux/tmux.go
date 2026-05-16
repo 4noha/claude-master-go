@@ -225,8 +225,10 @@ func (m *Manager) StyleWindowID(id, style string) {
 	}
 	t := m.Session + ":" + id
 	out("set-option", "-w", "-t", t, "window-status-style", style)
+	// アクティブ窓は反転でなく太字で強調（bg 指定時に反転だと
+	// 配色が崩れるため）。
 	out("set-option", "-w", "-t", t, "window-status-current-style",
-		style+",reverse")
+		style+",bold")
 }
 
 // SetWindowStyle は key に対応する window のステータス色を設定する

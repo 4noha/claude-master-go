@@ -105,8 +105,8 @@ func TestReconcileRemoteStatelessNoDuplicate(t *testing.T) {
 	for id := range mwc {
 		so, _ := exec.Command("tmux", "show-options", "-w", "-t",
 			tsession+":"+id, "window-status-style").CombinedOutput()
-		if !strings.Contains(string(so), colorFor("remoteA")) {
-			t.Fatalf("リモート窓に識別色が無い: id=%s opt=%q", id, string(so))
+		if !strings.Contains(string(so), "bg="+colorFor("remoteA")) {
+			t.Fatalf("リモート窓に背景識別色(bg=)が無い: id=%s opt=%q", id, string(so))
 		}
 	}
 
