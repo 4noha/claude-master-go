@@ -12,18 +12,22 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   `~/.claude-master.toml` は両者同一キー＝設定移行不要（M1 で parity 確認済）。
 - マイルストーン: **M1 config ✅** / **M2 VT モデル ✅** / **M3 ptyproxy ✅** /
   **M4 nav・pagekey・wheel・SESSION_LOG ✅** /
-  **M5 monitor・tmux・socket_client・実行可能 proxy ✅（中核）** /
-  M5e 使用量上限 自動中断/再開（cutover 前の完全 parity に必要）/
+  **M5 monitor・tmux・socket_client・実行可能 proxy ✅（完全）** /
   M6 GCP 同期。各 M は build＋実録画/実環境テスト緑で前進（合成では緑判定しない）。
+  - **Python 版との機能 parity 到達（M5e まで完了）= cutover 解禁。**
+    cutover（claude-wrap/launchd を Go バイナリへ実切替）は稼働環境を
+    変える不可逆・対外操作のためユーザー明示確認後に実施（それまで
+    Python 稼働継続）。手順は「移行カットオーバー手順」節参照。
   - M5 内訳: M5a scanner（ps/lsof・実環境 5 セッション実検出）、M5b tmux
     （実 tmux 隔離セッション CRUD）、M5c socket_client（実 socket→実
     Server→pan を display-oracle）、M5d-1 実行可能 proxy（claude-wrap
     置換＝cutover 中核・実録画ラップ統合検証）、M5d-2 monitor ループ
-    ＋start/stop/status＋最小 dashboard（実 scan→実 tmux 同期）。
-  - M5e（未移植）: limit_watcher/resume_scheduler（使用量上限の自動
-    中断/再開）＋ proxy の使用量ヒューリスティック status 書出
-    （extract_usage/is_active）＋ 完全版 dashboard。cutover はこの
-    完全 parity 検証後（Python は M5e 完了まで稼働継続）。
+    ＋start/stop/status＋dashboard（実 scan→実 tmux 同期）。
+  - M5e 内訳: M5e-1 使用量 status（extract_usage/is_active＋
+    _maybe_write_status、実録画で is_active 検証・usage は実 negative）、
+    M5e-2 limit_watcher/resume_scheduler＋RunLoop 完全配線（実 status
+    スキーマ・実 reset 形式・実 unix socket・実 tmux で中断/再開検証）、
+    M5e-3 dashboard.py render 完全移植（実スキーマで枠整合・全要素）。
   - M4 内訳: M4a `IsLiveResetKey`/`ClassifyWheel`（Python 厳密ケース同値）、
     M4b `Server.HandleHostInput`（host nav/pagekey/wheel 状態機械。Python
     `_handle_host_stdin` と判定順含め 1:1、実 VT＋display-oracle 検証）、
