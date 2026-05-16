@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/4noha/claude-master-go/internal/config"
 	"github.com/4noha/claude-master-go/internal/screen"
 )
 
@@ -92,7 +93,11 @@ func startServer(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	srv := NewServer(p, nil, nil, 0, 0) // cfg 既定・host 出力なし
+	// 明示 cfg（SESSION_LOG 無効）: 無関係テストで実ログを開かせない
+	srv := NewServer(p, &config.Config{
+		SizePolicy: "client", NavKey: []byte{0x1c},
+		NavScrollStep: 1, NavPageStep: 10, NavWheelStep: 3,
+	}, nil, 0, 0) // host 出力なし
 	sock := tmpSock(t)
 	if err := srv.Serve(sock); err != nil {
 		t.Fatalf("Serve: %v", err)

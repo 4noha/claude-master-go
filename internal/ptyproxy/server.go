@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -43,6 +45,9 @@ type Server struct {
 	hCols    int
 	hRows    int
 	hostNav  bool // host managed scroll nav-mode（NAV_KEY トグル）
+	logsDir  string
+	sessFp      *os.File               // SESSION_LOG 出力先（nil=無効）
+	sessFlusher *screen.HistoryFlusher // 確定行 capture/drain
 	done     chan struct{}
 	doneOnce sync.Once
 }
@@ -51,12 +56,17 @@ func NewServer(p *Proxy, cfg *config.Config, host io.Writer, hostCols, hostRows 
 	if cfg == nil {
 		cfg = config.Load()
 	}
-	return &Server{
+	logs := filepath.Join(".", "logs")
+	if h, err := os.UserHomeDir(); err == nil {
+		logs = filepath.Join(h, ".claude-master", "logs") // Python LOGS_DIR と同じ
+	}
+	s := &Server{
 		p: p, cfg: cfg, clients: map[*client]struct{}{},
 		host: host, hostSR: screen.NewScrollRenderer(),
-		hCols: hostCols, hRows: hostRows,
+		hCols: hostCols, hRows: hostRows, logsDir: logs,
 		done: make(chan struct{}),
 	}
+	return s
 }
 
 // Serve は sock を listen し、accept ループと master ポンプを起動。
@@ -67,6 +77,7 @@ func (s *Server) Serve(sockPath string) error {
 		return err
 	}
 	s.ln = ln
+	s.openSessionLog() // SESSION_LOG 有効時のみ（masterPump 前に開く）
 	go s.acceptLoop()
 	go s.masterPump()
 	return nil
@@ -75,6 +86,7 @@ func (s *Server) Serve(sockPath string) error {
 func (s *Server) Done() <-chan struct{} { return s.done }
 
 func (s *Server) Stop() {
+	s.finalizeSessionLog() // 残り確定行＋最終可視画面を書いて閉じる
 	s.doneOnce.Do(func() { close(s.done) })
 	if s.ln != nil {
 		_ = s.ln.Close()
@@ -111,6 +123,7 @@ func (s *Server) masterPump() {
 		if n > 0 {
 			s.mu.Lock()
 			s.p.VT.Feed(buf[:n])
+			s.sessionLogCaptureLocked() // 確定行をファイルへ（描画非依存）
 			s.broadcastLocked()
 			s.mu.Unlock()
 		}

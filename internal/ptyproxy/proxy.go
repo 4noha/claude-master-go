@@ -98,6 +98,14 @@ func (p *Proxy) PumpToVT() error {
 // Wait は子プロセス終了を待つ。
 func (p *Proxy) Wait() error { return p.cmd.Wait() }
 
+// Pid は子 claude プロセス PID（未起動/テスト構築時は 0）。
+func (p *Proxy) Pid() int {
+	if p.cmd != nil && p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
+
 // Close はリソース解放。
 func (p *Proxy) Close() {
 	if p.master != nil {

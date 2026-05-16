@@ -45,6 +45,7 @@ type VT struct {
 	cx, cy     int
 	top, bot   int // スクロール margin（0-index, inclusive, 既定 full）
 	hist       [][]cell
+	histTotal  int   // 累計 history.top 確定行数（maxlen trim で消えても増え続ける＝大域 identity）
 	wrap       bool  // 次の描画で行折返し保留（DECAWM, 既定 on）
 	pen        style // 現在の SGR ペン（draw 時に cell へ）
 	scx, scy   int   // DECSC/RC 退避
@@ -256,6 +257,7 @@ func (v *VT) lineFeed() {
 		line := make([]cell, v.cols)
 		copy(line, v.buf[v.top])
 		v.hist = append(v.hist, line)
+		v.histTotal++
 		if len(v.hist) > histMax {
 			v.hist = v.hist[len(v.hist)-histMax:]
 		}
@@ -516,5 +518,10 @@ func (v *VT) HistoryLines() []string {
 // Cursor は現在カーソル位置。
 func (v *VT) Cursor() (x, y int) { return v.cx, v.cy }
 
-// HistLen は history.top 行数。
+// HistLen は history.top 行数（maxlen trim 後の保持数）。
 func (v *VT) HistLen() int { return len(v.hist) }
+
+// HistTotal は起動以降に history.top へ確定した累計行数（maxlen trim で
+// 保持配列から落ちても増え続ける）。先頭保持行の大域 index は
+// HistTotal()-HistLen()。HistoryFlusher の大域 identity 追跡に使う。
+func (v *VT) HistTotal() int { return v.histTotal }
