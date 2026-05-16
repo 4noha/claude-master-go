@@ -92,7 +92,7 @@ func startServer(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	srv := NewServer(p, nil, 0, 0) // host 出力なし
+	srv := NewServer(p, nil, nil, 0, 0) // cfg 既定・host 出力なし
 	sock := tmpSock(t)
 	if err := srv.Serve(sock); err != nil {
 		t.Fatalf("Serve: %v", err)
