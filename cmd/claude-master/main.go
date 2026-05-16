@@ -412,9 +412,11 @@ func runCloudAgent(cfg *config.Config) {
 		self, _ := os.Executable()
 		sa := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 		wc := func(pc, sid, dir string) string {
+			// 再接続は 30s 間隔（切断時の Cloud Run 再接続＋Firestore
+			// wake 書込のコスト churn を抑制。閲覧復帰は最大 30s 遅延）。
 			return fmt.Sprintf("while true; do env GCP_PROJECT=%s "+
 				"CLOUD_RELAY_URL=%s GOOGLE_APPLICATION_CREDENTIALS=%s "+
-				"%s cloud attach %s --pc %s; sleep 3; done",
+				"%s cloud attach %s --pc %s; sleep 30; done",
 				cfg.GCPProject, cfg.CloudRelayURL, sa, self, sid, pc)
 		}
 		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc)

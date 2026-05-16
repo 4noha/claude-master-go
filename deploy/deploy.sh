@@ -12,7 +12,7 @@
 #   2. Firestore Native DB 作成（未作成なら）
 #   3. Artifact Registry リポジトリ作成（cm）
 #   4. Cloud Build で cloud/relay/Dockerfile をビルド＆push
-#   5. Cloud Run デプロイ（min-instances=0 / no-cpu-throttling /
+#   5. Cloud Run デプロイ（min-instances=0 / cpu-throttling /
 #      timeout=3600 / allow-unauthenticated。sid は claude UUID で
 #      推測困難、wake 制御は Firestore 認証で別途防御）
 #   6. relay URL を表示（CLOUD_RELAY_URL に wss:// で設定）
@@ -61,7 +61,7 @@ fi
 WKEY="$(cat "$KEYF")"
 gcloud run deploy "$SERVICE" --project="$PROJECT" --region="$REGION" \
   --image="$IMG" --min-instances=0 --max-instances=4 \
-  --no-cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080 \
+  --cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080 \
   --set-env-vars="GCP_PROJECT=${PROJECT},WEB_SIGNING_KEY=${WKEY}"
 
 URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT" \
