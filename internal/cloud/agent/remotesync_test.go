@@ -64,14 +64,23 @@ func TestSyncRemoteOnceRealFirestoreRealTmux(t *testing.T) {
 		mgr.WindowFor("R:remoteA/rs2") == "" {
 		t.Fatalf("リモートセッションが窓化されない: %s", wins)
 	}
-	if !strings.Contains(wins, "remoteA-projA") ||
-		!strings.Contains(wins, "remoteA-projB") {
-		t.Fatalf("窓名が想定外: %s", wins)
+	// 短縮ラベル（↗＋dir）になっている（長い pc 接頭辞は付けない）
+	if !strings.Contains(wins, "↗projA") ||
+		!strings.Contains(wins, "↗projB") {
+		t.Fatalf("短縮窓名が想定外: %s", wins)
 	}
 	// 自 PC のセッションは窓化しない（ローカル監視の担当）
 	if mgr.WindowFor("R:this-pc/self1") != "" ||
-		strings.Contains(wins, "this-pc-mine") {
+		strings.Contains(wins, "↗mine") {
 		t.Fatalf("自 PC セッションを誤同期: %s", wins)
+	}
+	// PC ごとの識別色が実 tmux の per-window option に設定されている
+	win := mgr.WindowFor("R:remoteA/rs1")
+	so, _ := exec.Command("tmux", "show-options", "-w", "-t",
+		tsession+":"+win, "window-status-style").CombinedOutput()
+	if !strings.Contains(string(so), colorFor("remoteA")) {
+		t.Fatalf("リモート窓に識別色が設定されない: opt=%q want fg=%s",
+			string(so), colorFor("remoteA"))
 	}
 
 	// remoteA の rs2 を削除 → 次パスで窓も閉じる
@@ -83,7 +92,7 @@ func TestSyncRemoteOnceRealFirestoreRealTmux(t *testing.T) {
 		t.Fatalf("削除後も known に残る: %v", known)
 	}
 	w := strings.Join(mgr.ListWindows(), ",")
-	if strings.Contains(w, "remoteA-projA") || strings.Contains(w, "remoteA-projB") {
+	if strings.Contains(w, "↗projA") || strings.Contains(w, "↗projB") {
 		t.Fatalf("リモート消失後も窓が残る: %s", w)
 	}
 }

@@ -2,11 +2,34 @@ package agent
 
 import (
 	"context"
+	"hash/fnv"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/tmux"
 )
+
+// remotePalette は PC ごとに割り当てる識別色（読みやすい 8 色）。
+var remotePalette = []string{
+	"colour39", "colour213", "colour154", "colour208",
+	"colour45", "colour220", "colour171", "colour120",
+}
+
+// colorFor は pc 名から決定的に色を選ぶ（同 PC は常に同色）。
+func colorFor(pc string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(pc))
+	return remotePalette[int(h.Sum32())%len(remotePalette)]
+}
+
+// shortName はラベルを短く（先頭 ↗＝リモート印＋dir を rune 12 まで）。
+func shortName(dir string) string {
+	r := []rune(dir)
+	if len(r) > 12 {
+		r = r[:12]
+	}
+	return "↗" + string(r)
+}
 
 // RemoteSession は他 PC のセッション 1 つ（tmux 窓化の単位）。
 type RemoteSession struct{ PC, SID, Dir string }
@@ -49,7 +72,9 @@ func SyncRemoteOnce(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 			}
 			key := "R:" + pc + "/" + sid
 			cur[key] = true
-			mgr.EnsureCmdWindow(key, pc+"-"+dir, wc(pc, sid, dir))
+			mgr.EnsureCmdWindow(key, shortName(dir), wc(pc, sid, dir))
+			// PC ごとの識別色（リモート窓を一目で区別）
+			mgr.SetWindowStyle(key, "fg="+colorFor(pc))
 		}
 	}
 	for k := range known {

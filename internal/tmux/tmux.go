@@ -120,6 +120,22 @@ func (m *Manager) EnsureCmdWindow(key, base, command string) string {
 	return name
 }
 
+// SetWindowStyle は key に対応する window のステータス色を設定する
+// （リモート PC 窓を視覚的に区別。tmux の window-status-style /
+// -current-style を per-window で上書き）。例 style="fg=colour213"。
+func (m *Manager) SetWindowStyle(key, style string) {
+	m.mu.Lock()
+	name := m.keyToWindow[key]
+	m.mu.Unlock()
+	if name == "" {
+		return
+	}
+	tgt := m.Session + ":" + name
+	out("set-option", "-w", "-t", tgt, "window-status-style", style)
+	out("set-option", "-w", "-t", tgt, "window-status-current-style",
+		style+",reverse")
+}
+
 func (m *Manager) AddWindow(s scanner.ClaudeSession, socketPath string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
