@@ -149,6 +149,32 @@ func (c *Client) ConsumePairing(ctx context.Context, codeHash string) (pc, scope
 	return p, sc, true, nil
 }
 
+// RegisterPC は pcs/{pcID} 親 doc を明示作成する（端末一覧に確実に
+// 出すため。agent/helper 起動時に 1 回呼ぶ＝1 書込で near-$0。
+// PushStatus の差分ゲートだと未変更セッションや再起動で消える問題を解消）。
+func (c *Client) RegisterPC(ctx context.Context) error {
+	_, err := c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, map[string]any{
+		"id":         c.pcID,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	return err
+}
+
+// DeletePC は pcs/{pcID}（sessions サブコレクション含む）と wake/{pcID}
+// を削除する（テスト端末の後始末・端末解除用）。
+func (c *Client) DeletePC(ctx context.Context) error {
+	col := c.fs.Collection("pcs").Doc(c.pcID).Collection("sessions")
+	docs, err := col.Documents(ctx).GetAll()
+	if err == nil {
+		for _, d := range docs {
+			_, _ = d.Ref.Delete(ctx)
+		}
+	}
+	_, _ = c.fs.Collection("pcs").Doc(c.pcID).Delete(ctx)
+	_, err = c.fs.Collection("wake").Doc(c.pcID).Delete(ctx)
+	return err
+}
+
 // ListPCs は pcs/* の PC（端末）id 一覧（アカウント全体 scope 用）。
 func (c *Client) ListPCs(ctx context.Context) ([]string, error) {
 	docs, err := c.fs.Collection("pcs").Documents(ctx).GetAll()

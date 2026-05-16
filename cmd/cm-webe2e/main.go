@@ -47,6 +47,16 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
+		if err := st.DeletePC(ctx); err != nil {
+			panic(err)
+		}
+		fmt.Println("E2E_CLEANUP_DONE PC=" + pc)
+		return
+	}
+	if err := st.RegisterPC(ctx); err != nil { // 端末一覧に確実に出す
+		panic(err)
+	}
 	if _, err := st.PushStatus(ctx, []map[string]any{{
 		"key": sid, "session_id": sid, "short_dir": "recording-demo",
 		"pid": float64(1), "is_active": true, "cwd": "/demo",

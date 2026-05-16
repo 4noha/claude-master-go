@@ -281,6 +281,9 @@ func runCloudAgent(cfg *config.Config) {
 		exitErr(err)
 	}
 	defer st.Close()
+	if err := st.RegisterPC(ctx); err != nil { // 端末一覧に確実に出す
+		exitErr(fmt.Errorf("PC 登録失敗: %w", err))
+	}
 	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）
 	go func() {
 		t := time.NewTicker(5 * time.Second)

@@ -87,6 +87,26 @@ agent⇄unix socket⇄PtyProxy（バイト透過・xterm.js が描画）。
   - 公開 URL: `https://claude-master-relay-demo01-an.a.run.app`
     （`/login`）。署名鍵 `~/.claude-master/web_signing_key`
     （リポジトリ外・600・再デプロイ不変）。
+- **M7e ✅** 3 ページ化: `/`＝アカウント端末一覧（`/api/devices`）、
+  各セッションから `/term?pc=&sid=` の Web ターミナルへリンク。
+- **M7f ✅ 認証を Google アカウントに置換**（pairing code 廃止）:
+  GIS（client_id 埋込）→`POST /auth/google`（g_csrf_token 二重送信→
+  `idtoken` で署名/aud/iss/exp 検証→`ALLOWED_EMAILS` allowlist
+  ＝owner@example.com のみ→HMAC cookie scope="*"=全 PC）。
+  webauth に GoogleVerifier（本番 idtoken/テスト fake）、state に
+  ListPCs/RegisterPC/DeletePC（端末は起動時 RegisterPC で確実に
+  一覧表示）。OAuth は Console（chrome-devtools 操作）で同意画面
+  External/Testing＋テストユーザー＋ウェブクライアント作成。
+  Client ID `000000000000-EXAMPLECLIENTID.
+  apps.googleusercontent.com`、JS 生成元＝公開 URL、リダイレクト
+  ＝`/auth/google`。Cloud Run 再デプロイ（GOOGLE_OAUTH_CLIENT_ID＋
+  ALLOWED_EMAILS env、rev 00005）。**実 Chrome で実 Google サイン
+  イン→端末一覧→Web ターミナルを開く→/term の xterm DOM に実録画
+  フッターを確認**（DOM display-oracle・合成なし）。検証後 webe2e
+  テスト端末は DeletePC で除去。稼働 launchd cloud agent も
+  RegisterPC 対応版へ再ビルド・再起動（実 Mac-Studio が一覧に出る）。
+  個人専用前提（External/Testing のまま審査・公開不要、リフレッシュ
+  トークン不使用で 7 日失効の影響なし）。
 
 ## 不変条件継承
 

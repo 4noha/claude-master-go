@@ -41,17 +41,22 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   - 稼働 launchd 2 本: `com.4noha.claude-master`(monitor)/
     `com.4noha.claude-master-cloud`(cloud agent)。SA 鍵
     `~/.claude-master/sa.json` はリポジトリ外・600・非コミット。
-  - **M7 Web 管理 UI＋コード認証 ✅（実デプロイ・実ブラウザ検証済）**:
-    別 PC/ブラウザから SA 鍵不要・pairing code だけで接続。Cloud Run
-    relay を Web 兼用へ拡張（ブラウザは GCP 資格情報を持たず HMAC
-    cookie、Firestore は Cloud Run ランタイム SA 経由。relay の
-    バイト透過/既存 /session は無改変）。M7a webauth＋pairing/
-    M7b backend(/login,/auth/code,/api,/ws)/M7c xterm.js go:embed/
-    M7d 実 Chrome→実 Cloud Run→実 Firestore e2e（xterm DOM に実録画
-    フッターを display-oracle 確認）。公開 `…run.app/login`。署名鍵
-    `~/.claude-master/web_signing_key`（リポジトリ外・再デプロイ不変）。
-    deploy.sh が web env＋ランタイム SA Firestore 権限まで自動化。
-    別 PC は「ブラウザで /login を開きコード入力」だけで接続可能に。
+  - **M7 Web 管理 UI＋Google ログイン ✅（実デプロイ・実ブラウザ検証済）**:
+    Cloud Run relay を Web 兼用へ拡張（ブラウザは GCP 資格情報を持たず
+    HMAC cookie、Firestore は Cloud Run ランタイム SA 経由。relay の
+    バイト透過/既存 /session は無改変）。M7a-d=Web/xterm/実 e2e、
+    M7e=3 ページ化（`/`＝アカウント端末一覧→各セッションから
+    `/term` の Web ターミナルへリンク）、**M7f=認証を Google アカウント
+    に置換**（pairing code 廃止。GIS→`/auth/google`：g_csrf 二重送信→
+    idtoken 検証→`ALLOWED_EMAILS`=owner@example.com のみ→cookie
+    scope="*"）。OAuth 同意画面は External/Testing＋テストユーザー、
+    Web Client ID は env、起動時 `RegisterPC` で端末一覧に確実表示。
+    **実 Chrome で実 Google サインイン→端末一覧→Web ターミナル→
+    /term xterm DOM に実録画フッター**を display-oracle 確認（合成なし）。
+    公開 `https://claude-master-relay-demo01-an.a.run.app/`。
+    署名鍵 `~/.claude-master/web_signing_key`/SA 鍵 `~/.claude-master/
+    sa.json`（共にリポジトリ外）。個人専用前提＝審査・公開不要。
+    別 PC は「ブラウザで公開 URL を開き Google ログイン」だけで接続可。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
