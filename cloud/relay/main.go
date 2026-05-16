@@ -20,7 +20,13 @@ import (
 func handler() http.Handler {
 	rl := relay.NewServer()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// ヘルスは "/"。`/healthz` は Google Front End が予約・遮断する
+	// （Cloud Run 実測: /healthz は GFE 404、他パスは正常到達）ため使わない。
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
 	})

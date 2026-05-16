@@ -90,8 +90,19 @@ M6a–c は全てローカル（エミュレータ＋ローカル WSS）で先�
   `cloud attach`（socket_client を WSS 再利用）。Cloud Functions は
   「viewer が直接 wake doc 書込（rules 認証）」設計で不要化＝簡素化。
   コード/資材完了。**実 gcloud デプロイは未実施**。
-- **M6e（保留・要確認）** 実 GCP デプロイ＋実 2PC 結線・本番 cutover。
-  対外・課金・要 project_id/region/billing。ユーザー明示確認後のみ。
+- **M6e ✅** 実 GCP デプロイ＋実結線（ユーザー承認済）。専用 project
+  `example-gcp-project`（billing 0136AA-… / region asia-northeast1）に
+  Cloud Run relay デプロイ＋Firestore Native 作成＋SA `cm-agent`
+  (datastore.user, 鍵 `~/.claude-master/sa.json` 600)。実 Cloud Run
+  relay＋実 Firestore 経由で wake→データ線→画面到達→SCROLL 透過を
+  実録画＋display-oracle で検証（`-tags manual` の e2e、3.2s 緑）。
+  - relay URL: `https://claude-master-relay-demo01-an.a.run.app`
+    （WSS は wss://… ／ヘルスは `/`。**`/healthz` は Google Front End
+    が予約・遮断する実測知見**＝コード側でヘルスを `/` へ変更）。
+  - サーバ SDK は ADC/SA 認証で Firestore Security Rules 非対象。
+    web 等を足すとき `deploy/firestore.rules` を firebase deploy。
+  - 本番 cutover（`cloud agent` を launchd 常駐化）は別途・要確認
+    （常時アウトバウンド＋極小課金）。インフラ／検証は完了。
 - **M6e** 実 GCP 結線・本番 cutover（実 project で 2 PC 間同期実証）。
 
 ## 不変条件（M1–M5 から継承）

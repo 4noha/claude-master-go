@@ -21,10 +21,16 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     新プロトコル無し）、quiescence で開閉。
   - **M6a–d ✅**（実 WSS／gcloud Firestore エミュレータ＝実 API／実
     PtyProxy＋実録画／display-oracle で全検証。Cloud Functions は
-    viewer 直接 wake 書込で不要化＝簡素化）。コード/デプロイ資材完了。
-  - **M6e 保留**: 実 GCP デプロイ＋実 2PC 結線。対外・課金・要 project
-    確認のためユーザー明示確認後のみ（`deploy/deploy.sh` は引数無しで
-    何もしない誤デプロイ防止ガード付き）。
+    viewer 直接 wake 書込で不要化＝簡素化）。
+  - **M6e ✅**（ユーザー承認の上 実 GCP デプロイ済）: 専用 project
+    `example-gcp-project`／Cloud Run relay `claude-master-relay`
+    （`https://claude-master-relay-demo01-an.a.run.app`、min0・
+    timeout3600・no-cpu-throttling）／Firestore Native(asia-northeast1)
+    ／SA `cm-agent`(datastore.user, 鍵 `~/.claude-master/sa.json`)。
+    実 Cloud Run＋実 Firestore 経由 e2e（wake→トンネル→display-oracle）
+    緑（`go test -tags manual` の `TestE2ERealGCP`）。**`/healthz` は
+    GFE 予約で遮断＝ヘルスは `/`**。Python 版に無いクラウド同期を Go で
+    新規達成。`cloud agent` の launchd 常駐化（本番運用化）は別途確認。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
