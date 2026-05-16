@@ -72,7 +72,13 @@ GCP クラウド同期。
 - **M3 ptyproxy**: pty fork + raw I/O ループ + unix socket 多重化（最小 mini-tmux）
 - **M4**: nav-mode/PAGEKEY/WHEEL/is_live_reset_key/quiescence 移植
 - **M5**: monitor/tmux 同期
-- **M6**: クラウド同期層（FCM wake + Cloud Run WSS + Firestore）
+- **M6**: クラウド同期層。**確定設計は `DESIGN_M6.md`**（wake は FCM
+  でなく Firestore listener に確定＝デスクトップ常駐向き・near-$0・
+  NAT 越え。データ線は既存 RESIZE/SCROLL/frame protocol を WSS で
+  そのままトンネル＝`internal/client` 再利用）。M6a WSS relay /
+  M6b Firestore(emulator) / M6c agent / M6d クラウド実体・deploy /
+  M6e 実 GCP cutover に細分。M6a–c はローカル実検証可、M6d 以降は
+  GCP プロジェクト確認後。
 
 ## 不変条件（Python 版から継承）
 

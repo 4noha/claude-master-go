@@ -13,7 +13,17 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
 - マイルストーン: **M1 config ✅** / **M2 VT モデル ✅** / **M3 ptyproxy ✅** /
   **M4 nav・pagekey・wheel・SESSION_LOG ✅** /
   **M5 monitor・tmux・socket_client・実行可能 proxy ✅（完全）** /
-  M6 GCP 同期。各 M は build＋実録画/実環境テスト緑で前進（合成では緑判定しない）。
+  **M6 GCP 同期（設計確定: `DESIGN_M6.md`。実装中）**。各 M は build＋
+  実録画/実環境テスト緑で前進（合成では緑判定しない）。
+  - M6 設計確定: wake=Firestore listener（FCM 不採用＝デスクトップ常駐
+    向き・near-$0・PC 発 NAT 越え）、データ線=Cloud Run WSS で既存
+    RESIZE/SCROLL/frame protocol をトンネル（`internal/client` 再利用・
+    新プロトコル無し）、quiescence(HistoryFlusher)で開閉。M6a WSS relay/
+    M6b Firestore emulator/M6c agent/M6d クラウド実体/M6e 実 GCP。
+    M6a–c ローカル実検証可、M6d 以降は GCP プロジェクト確認後。
+  - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
+    （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
+    自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
   - **Python 版との機能 parity 到達（M5e まで完了）= cutover 解禁。**
     cutover（claude-wrap/launchd を Go バイナリへ実切替）は稼働環境を
     変える不可逆・対外操作のためユーザー明示確認後に実施（それまで
