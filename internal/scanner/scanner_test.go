@@ -3,9 +3,11 @@ package scanner
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 合成行は使わない: 実 `ps aux` 出力・実 claude CLI 引数契約
@@ -131,5 +133,66 @@ func TestKeyAndShortDirRealCwd(t *testing.T) {
 	}
 	if (ClaudeSession{Cwd: "/"}).ShortDir() != "unknown" {
 		t.Fatal("ルート cwd の ShortDir が unknown でない")
+	}
+}
+
+// lsof は C/POSIX ロケールで非ASCII バイトを文字列 "\xNN" に化かす。
+// unescapeLsof はそれを元バイトへ戻す（U+2010 ハイフン "‐"=E2 80 90
+// を含む実パス claude‐master が壊れた実バグの核）。純関数を決定的に検証。
+func TestUnescapeLsofRestoresUTF8(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`/Users/4noha/works/claude\xe2\x80\x90master`,
+			"/Users/4noha/works/claude‐master"},
+		{"/plain/ascii/path", "/plain/ascii/path"}, // 非対象は素通し
+		{`a\xe2\x80\x90b\x20c`, "a‐b c"},        // 連続/空白エスケープ
+		{`no-backslash-x-here`, "no-backslash-x-here"},
+	}
+	for _, c := range cases {
+		if got := unescapeLsof(c.in); got != c.want {
+			t.Fatalf("unescapeLsof(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// 実 lsof で「cwd に U+2010 を含むプロセス」を解決し、C ロケール下でも
+// 正しい UTF-8 パスが返ることを検証（ロケール強制＋unescape の統合）。
+// 合成 stub は使わず実プロセス・実 lsof・実ディレクトリで担保。
+func TestGetCwdLsofRealUnicodeHyphenDir(t *testing.T) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("lsof 不在")
+	}
+	base := t.TempDir()
+	uniDir := filepath.Join(base, "claude‐master") // U+2010 を含む
+	if err := os.Mkdir(uniDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cmd := exec.Command("sleep", "30")
+	cmd.Dir = uniDir
+	// テスト自身を C ロケールにしても getCwdLsof 内のロケール強制＋
+	// unescape で正しく解決できることを示す（バグ条件を再現した上で緑）。
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+
+	// macOS は /var→/private/var 等の symlink があり lsof は実体パスを
+	// 返すため symlink 解決して比較（本検証の主眼は U+2010 の保持）。
+	want, _ := filepath.EvalSymlinks(uniDir)
+
+	var got string
+	for i := 0; i < 50; i++ { // lsof が見えるまで小待ち
+		if got = getCwdLsof(cmd.Process.Pid); got != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if g, _ := filepath.EvalSymlinks(got); got != uniDir && g != want {
+		t.Fatalf("U+2010 含む cwd が壊れた: got=%q want=%q (bytes=%v)",
+			got, want, []byte(got))
+	}
+	if (ClaudeSession{Cwd: got}).ShortDir() != "claude‐master" {
+		t.Fatalf("ShortDir が U+2010 を保持していない: %q",
+			(ClaudeSession{Cwd: got}).ShortDir())
 	}
 }

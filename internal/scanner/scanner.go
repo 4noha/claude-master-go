@@ -6,6 +6,7 @@ package scanner
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -135,19 +136,65 @@ func parsePSLine(line string, includeVSCode bool) (ClaudeSession, bool) {
 	}, true
 }
 
+// unescapeLsof は lsof が非印字/非ASCII バイトを出す `\xNN` 形式を
+// 元バイトへ戻す（lsof は C/POSIX ロケールだと UTF-8 パス例 U+2010
+// `‐`=E2 80 90 を文字列 "\xe2\x80\x90" に化かす）。`\xNN` のみ復元し
+// 他は素通し（`\\` 等の特殊化は macOS lsof のパスでは実害が無く、
+// 取り違えると逆破壊のため最小限）。launchd は LANG 不設定＝C なので
+// ロケール強制と併用する二重防御。
+func unescapeLsof(s string) string {
+	if !strings.Contains(s, `\x`) {
+		return s
+	}
+	var b []byte
+	for i := 0; i < len(s); {
+		if i+3 < len(s) && s[i] == '\\' && s[i+1] == 'x' &&
+			isHex(s[i+2]) && isHex(s[i+3]) {
+			b = append(b, hexVal(s[i+2])<<4|hexVal(s[i+3]))
+			i += 4
+			continue
+		}
+		b = append(b, s[i])
+		i++
+	}
+	return string(b)
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+		(c >= 'A' && c <= 'F')
+}
+func hexVal(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
+}
+
 // getCwdLsof は `lsof -a -p <pid> -d cwd -Fn` の n 行から cwd を得る
 // （Python _get_cwd_lsof と同一。SIP 保護等で取れなければ ""）。
+// launchd 起動だと LANG/LC_* 未設定＝C ロケールで lsof が非ASCII を
+// `\xNN` に化かす（U+2010 ハイフン等を含むパスが壊れる実バグ）。
+// UTF-8 ロケールを明示し（lsof に生バイトを出させる）、保険で
+// unescapeLsof も通す二重防御。
 func getCwdLsof(pid int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-a", "-p",
-		strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+	cmd := exec.CommandContext(ctx, "lsof", "-a", "-p",
+		strconv.Itoa(pid), "-d", "cwd", "-Fn")
+	cmd.Env = append(os.Environ(),
+		"LC_ALL=en_US.UTF-8", "LANG=en_US.UTF-8", "LC_CTYPE=en_US.UTF-8")
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	for _, ln := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(ln, "n") {
-			return ln[1:]
+			return unescapeLsof(ln[1:])
 		}
 	}
 	return ""
