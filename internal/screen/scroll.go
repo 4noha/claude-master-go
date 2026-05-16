@@ -1,5 +1,10 @@
 package screen
 
+import (
+	"fmt"
+	"strings"
+)
+
 // ScrollRenderer は viewport のスクロール位置を保持し、論理 canvas
 // (history.top + 可視 buffer) から viewport 行を切り出す。Python 版
 // pty_scroll.ScrollRenderer の **先頭アンカー方式**を忠実移植。
@@ -108,4 +113,132 @@ func (s *ScrollRenderer) ViewLines(hist, vis []string, vrows int) []string {
 // Canvas は VT モデルの論理 canvas（hist + vis）行を返す補助。
 func Canvas(v *VT) (hist, vis []string) {
 	return v.HistoryLines(), v.VisibleLines()
+}
+
+// ---- ANSI 描画（Python pty_scroll._append_row / render_viewport 移植）----
+
+func colorSeq(c color, fg bool) string {
+	if c == colDefault {
+		return ""
+	}
+	p := "48"
+	if fg {
+		p = "38"
+	}
+	if c&0x1000000 != 0 { // truecolor
+		r := byte(c >> 16)
+		g := byte(c >> 8)
+		b := byte(c)
+		return fmt.Sprintf("\x1b[%s;2;%d;%d;%dm", p, r, g, b)
+	}
+	return fmt.Sprintf("\x1b[%s;5;%dm", p, int(c)-1) // palette
+}
+
+// appendRow は 1 行を SGR 付き ANSI で書き出す（継続セル skip・空セルは
+// 既定 style の空白・style 変化時のみ reset+再適用。Python と同一手順）。
+func appendRow(b *strings.Builder, row []cell, vcols int) {
+	cur := style{}
+	first := true
+	for x := 0; x < vcols; x++ {
+		var ch cell
+		if x < len(row) {
+			ch = row[x]
+		}
+		if ch.cont {
+			continue // 全角継続セルは描かない
+		}
+		st := ch.st
+		data := " "
+		if ch.r != 0 {
+			data = string(ch.r)
+		} else {
+			st = style{} // 空セルは既定 style
+		}
+		if first || st != cur {
+			b.WriteString("\x1b[0m")
+			if st.bold {
+				b.WriteString("\x1b[1m")
+			}
+			if st.italic {
+				b.WriteString("\x1b[3m")
+			}
+			if st.under {
+				b.WriteString("\x1b[4m")
+			}
+			if st.reverse {
+				b.WriteString("\x1b[7m")
+			}
+			if st.fg != colDefault {
+				b.WriteString(colorSeq(st.fg, true))
+			}
+			if st.bg != colDefault {
+				b.WriteString(colorSeq(st.bg, false))
+			}
+			cur = st
+			first = false
+		}
+		b.WriteString(data)
+	}
+	b.WriteString("\x1b[0m")
+}
+
+// ViewCells は ViewLines と同一 oy 計算で cell 行 viewport を返す。
+func (s *ScrollRenderer) ViewCells(hist, vis [][]cell, vrows int) [][]cell {
+	total := len(hist) + len(vis)
+	maxOy := total - vrows
+	if maxOy < 0 {
+		maxOy = 0
+	}
+	s.lastMaxOy = maxOy
+	var oy int
+	if s.follow {
+		oy = maxOy
+	} else {
+		oy = s.anchor
+		if oy >= maxOy {
+			oy = maxOy
+			s.follow = true
+		} else if oy < 0 {
+			oy = 0
+		}
+		s.anchor = oy
+	}
+	line := func(i int) []cell {
+		if i < len(hist) {
+			return hist[i]
+		}
+		j := i - len(hist)
+		if j < len(vis) {
+			return vis[j]
+		}
+		return nil
+	}
+	out := make([][]cell, 0, vrows)
+	for r := 0; r < vrows; r++ {
+		L := oy + r
+		if L >= total {
+			break
+		}
+		out = append(out, line(L))
+	}
+	return out
+}
+
+// RenderANSI は viewport を同期出力で囲んだ ANSI フレームに（Python
+// render_viewport のバイト構造移植: 先頭 \x1b[?2026h、全消去後カーソルを
+// 画面最下部へ(_CLEAR_SEQ 規律)、行毎 appendRow、末尾 \x1b[?2026l）。
+func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
+	rows := s.ViewCells(v.hist, v.buf, vrows)
+	var b strings.Builder
+	b.WriteString("\x1b[?2026h")        // synchronized output begin
+	b.WriteString("\x1b[2J\x1b[9999;1H") // _CLEAR_SEQ: 全消去→最下部
+	b.WriteString("\x1b[H")
+	for i, row := range rows {
+		appendRow(&b, row, vcols)
+		if i+1 < len(rows) {
+			b.WriteString("\r\n")
+		}
+	}
+	b.WriteString("\x1b[?2026l") // synchronized output end
+	return []byte(b.String())
 }

@@ -16,9 +16,26 @@ import (
 
 const histMax = 5000 // pyte HistoryScreen(history=5000) と同じ
 
+// 色: 0=default。1..256 = パレット(idx-1)。それ以外 = 0x1000000|RGB
+// (truecolor)。Python _color_seq 相当を ANSI 復元時に再構成する。
+type color uint32
+
+const colDefault color = 0
+
+func palColor(i int) color  { return color(i + 1) }
+func rgbColor(r, g, b byte) color {
+	return color(0x1000000) | color(uint32(r)<<16|uint32(g)<<8|uint32(b))
+}
+
+type style struct {
+	fg, bg                       color
+	bold, italic, under, reverse bool
+}
+
 type cell struct {
 	r    rune
 	cont bool // 全角の継続セル（pyte の data=="" 相当。文字抽出でスキップ）
+	st   style
 }
 
 // VT は claude 出力の忠実画面モデル。history.top + 可視 buffer。
@@ -28,8 +45,9 @@ type VT struct {
 	cx, cy     int
 	top, bot   int // スクロール margin（0-index, inclusive, 既定 full）
 	hist       [][]cell
-	wrap       bool // 次の描画で行折返し保留（DECAWM, 既定 on）
-	scx, scy   int  // DECSC/RC 退避
+	wrap       bool  // 次の描画で行折返し保留（DECAWM, 既定 on）
+	pen        style // 現在の SGR ペン（draw 時に cell へ）
+	scx, scy   int   // DECSC/RC 退避
 	// パーサ状態
 	st    pstate
 	parm  []byte
@@ -218,9 +236,9 @@ func (v *VT) draw(r rune) {
 		v.cx = 0
 		v.lineFeed()
 	}
-	v.buf[v.cy][v.cx] = cell{r: r}
+	v.buf[v.cy][v.cx] = cell{r: r, st: v.pen}
 	if w == 2 && v.cx+1 < v.cols {
-		v.buf[v.cy][v.cx+1] = cell{cont: true}
+		v.buf[v.cy][v.cx+1] = cell{cont: true, st: v.pen}
 	}
 	v.cx += w
 	if v.cx >= v.cols {
@@ -287,6 +305,79 @@ func arg(ps []int, i, def int) int {
 	return def
 }
 
+// sgr は CSI ... m を解釈し pen を更新（Python ScrollRenderer が保持
+// していた fg/bg/bold/italic/underline/reverse 相当。claude 実使用:
+// truecolor 38;2/48;2、256 38;5/48;5、basic 30-37/40-47、bright
+// 90-97/100-107、0/1/3/4/7/22/23/24/27/39/49）。`\x1b[m`=reset。
+func (v *VT) sgr(ps []int) {
+	if len(ps) == 0 {
+		v.pen = style{}
+		return
+	}
+	for i := 0; i < len(ps); i++ {
+		n := ps[i]
+		switch {
+		case n == 0:
+			v.pen = style{}
+		case n == 1:
+			v.pen.bold = true
+		case n == 3:
+			v.pen.italic = true
+		case n == 4:
+			v.pen.under = true
+		case n == 7:
+			v.pen.reverse = true
+		case n == 22:
+			v.pen.bold = false
+		case n == 23:
+			v.pen.italic = false
+		case n == 24:
+			v.pen.under = false
+		case n == 27:
+			v.pen.reverse = false
+		case n >= 30 && n <= 37:
+			v.pen.fg = palColor(n - 30)
+		case n == 38:
+			ni, c := colorExt(ps, i)
+			v.pen.fg, i = c, ni
+		case n == 39:
+			v.pen.fg = colDefault
+		case n >= 40 && n <= 47:
+			v.pen.bg = palColor(n - 40)
+		case n == 48:
+			ni, c := colorExt(ps, i)
+			v.pen.bg, i = c, ni
+		case n == 49:
+			v.pen.bg = colDefault
+		case n >= 90 && n <= 97:
+			v.pen.fg = palColor(n - 90 + 8)
+		case n >= 100 && n <= 107:
+			v.pen.bg = palColor(n - 100 + 8)
+		}
+	}
+}
+
+// colorExt は 38/48 の拡張色（i=38/48 の位置）を読み、消費後の i と
+// color を返す。;2;r;g;b=truecolor、;5;n=256。
+func colorExt(ps []int, i int) (int, color) {
+	if i+1 >= len(ps) {
+		return i, colDefault
+	}
+	switch ps[i+1] {
+	case 2:
+		if i+4 < len(ps) {
+			return i + 4, rgbColor(byte(ps[i+2]), byte(ps[i+3]), byte(ps[i+4]))
+		}
+		return len(ps) - 1, colDefault
+	case 5:
+		if i+2 < len(ps) {
+			return i + 2, palColor(ps[i+2])
+		}
+		return len(ps) - 1, colDefault
+	}
+	return i + 1, colDefault
+}
+
 func (v *VT) csi(final byte) {
 	ps := v.params()
 	switch final {
@@ -319,8 +410,10 @@ func (v *VT) csi(final byte) {
 			v.top, v.bot = 0, v.rows-1
 		}
 		v.cx, v.cy = 0, v.top
-	case 'm', 'h', 'l', 'q', 'c', 'n', 't', 'p', ' ':
-		// SGR/モード/DA/DSR/cursor-style 等＝セル内容に非影響、無視
+	case 'm': // SGR（色/属性。pen を更新し以降の draw に反映）
+		v.sgr(ps)
+	case 'h', 'l', 'q', 'c', 'n', 't', 'p', ' ':
+		// モード/DA/DSR/cursor-style 等＝セル内容に非影響、無視
 	}
 	v.wrap = false
 	v.clampCursor()
