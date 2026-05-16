@@ -242,3 +242,42 @@ func TestConsumeMissingPairing(t *testing.T) {
 		t.Fatalf("不在 pairing が ok: ok=%v err=%v", ok, err)
 	}
 }
+
+// プロセス終了の同期: PushStatus で 2 セッション → 1 つを DeleteSession
+// → ListSessions/OwnSessionKeys から確実に消える（窓 kill 同期の土台）。
+// 実エミュレータで delete 反映を検証（合成 stub に頼らない）。
+func TestDeleteSessionSyncsTermination(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-term")
+	a := realSession("sid-alive", 1.0, true)
+	b := realSession("sid-ended", 2.0, true)
+	if _, err := c.PushStatus(ctx, []map[string]any{a, b}); err != nil {
+		t.Fatalf("PushStatus: %v", err)
+	}
+	keys, err := c.OwnSessionKeys(ctx)
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("OwnSessionKeys 初期 2 のはず: %v err=%v", keys, err)
+	}
+	// プロセス終了相当 → 消滅キーを Delete
+	if err := c.DeleteSession(ctx, "sid-ended"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	ss, err := c.ListSessions(ctx, "pc-term")
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(ss) != 1 || SessionKeyOf(ss[0]) != "sid-alive" {
+		t.Fatalf("終了セッションが残存（同期 kill 不成立）: %v", ss)
+	}
+	keys, _ = c.OwnSessionKeys(ctx)
+	if len(keys) != 1 || keys[0] != "sid-alive" {
+		t.Fatalf("OwnSessionKeys に終了分が残る: %v", keys)
+	}
+	// 空キー/不在キー Delete は安全（no-op・エラー無し）
+	if err := c.DeleteSession(ctx, ""); err != nil {
+		t.Fatalf("空キー Delete はエラー無しのはず: %v", err)
+	}
+	if err := c.DeleteSession(ctx, "sid-ended"); err != nil {
+		t.Fatalf("不在キー再 Delete はエラー無しのはず: %v", err)
+	}
+}

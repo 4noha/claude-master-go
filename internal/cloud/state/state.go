@@ -223,6 +223,41 @@ func (c *Client) ListSessions(ctx context.Context, pc string) ([]map[string]any,
 	return out, nil
 }
 
+// SessionKeyOf は session マップから doc id（＝同期キー）を返す。
+// PushStatus が doc id に使う sessionKey と同一規則（producer 側で
+// 「今 tick の生存キー集合」を作り終了検出するために公開）。
+func SessionKeyOf(s map[string]any) string { return sessionKey(s) }
+
+// DeleteSession は自 PC の pcs/{pcID}/sessions/{key} を削除する。
+// claude プロセス終了を「セッション消滅」としてクラウドへ伝播させ、
+// 各 consumer の WatchSessions→ReconcileRemote が窓を kill できる
+// （producer 側 in-memory 差分で終了時のみ呼ぶ＝追加読み無し near-$0）。
+func (c *Client) DeleteSession(ctx context.Context, key string) error {
+	if key == "" {
+		return nil
+	}
+	_, err := c.fs.Collection("pcs").Doc(c.pcID).
+		Collection("sessions").Doc(key).Delete(ctx)
+	return err
+}
+
+// OwnSessionKeys は自 PC の現存 session doc id 一覧。agent 再起動跨ぎで
+// 「停止中に終了したセッション」を取りこぼさないよう、producer ループ
+// 起動時に prev 集合を Firestore 実態で seed するのに使う（起動時 1 回
+// のみ＝tick 毎の追加読みは発生しない）。
+func (c *Client) OwnSessionKeys(ctx context.Context) ([]string, error) {
+	docs, err := c.fs.Collection("pcs").Doc(c.pcID).
+		Collection("sessions").Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.Ref.ID)
+	}
+	return out, nil
+}
+
 // Wake は wake/{pcId} に {sid, ts} を書く（Cloud Functions / テストが
 // 呼ぶ）。対象 PC の WatchWake listener が即発火する。
 func (c *Client) Wake(ctx context.Context, targetPC, sid string) error {

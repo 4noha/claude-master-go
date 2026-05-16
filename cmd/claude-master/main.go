@@ -390,14 +390,37 @@ func runCloudAgent(cfg *config.Config) {
 	if err := st.RegisterPC(ctx); err != nil { // 端末一覧に確実に出す
 		exitErr(fmt.Errorf("PC 登録失敗: %w", err))
 	}
-	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）
+	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）。
+	// 加えて「前 tick に在ったが今 tick に居ない」キーは DeleteSession で
+	// クラウドから消し、終了を consumer へ push 同期する（in-memory 差分
+	// なので追加 Firestore 読み無し＝終了時の Delete 書込のみ）。prev は
+	// 起動時に Firestore 実態で seed（agent 再起動中に終了した分も拾う）。
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
+		prev := map[string]bool{}
+		if seed, e := st.OwnSessionKeys(ctx); e == nil {
+			for _, k := range seed {
+				prev[k] = true
+			}
+		}
 		for {
-			if ss := statusSessions(cfg); len(ss) > 0 {
+			ss := statusSessions(cfg)
+			cur := map[string]bool{}
+			for _, s := range ss {
+				if k := state.SessionKeyOf(s); k != "" {
+					cur[k] = true
+				}
+			}
+			if len(ss) > 0 {
 				_, _ = st.PushStatus(ctx, ss)
 			}
+			for k := range prev {
+				if !cur[k] {
+					_ = st.DeleteSession(ctx, k) // 終了セッションを同期 kill
+				}
+			}
+			prev = cur
 			select {
 			case <-ctx.Done():
 				return

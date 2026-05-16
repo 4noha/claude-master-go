@@ -36,7 +36,12 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     GOOGLE_APPLICATION_CREDENTIALS/GCP_PROJECT/CLOUD_RELAY_URL、ログ
     `~/.claude-master-cloud.log`）。KeepAlive 自動復帰検証済。near-$0
     維持のため `state.PushStatus` は content_hash 不変時 Firestore 非
-    書込（毎 tick 全書込＋無駄 wake を回避）。停止は
+    書込（毎 tick 全書込＋無駄 wake を回避）。**プロセス終了同期**:
+    producer ループが前 tick との in-memory 差分で消滅キーを
+    `state.DeleteSession` で削除（起動時 `OwnSessionKeys` で prev を
+    seed＝再起動跨ぎ取りこぼし防止）。終了が WatchSessions→
+    ReconcileRemote へ push 伝播し ↗窓/dashboard 行が消える。追加読み
+    無し・終了時の Delete 書込のみで near-$0 維持。停止は
     `launchctl unload -w …com.4noha.claude-master-cloud.plist`。
   - 稼働 launchd 2 本: `com.4noha.claude-master`(monitor)/
     `com.4noha.claude-master-cloud`(cloud agent)。SA 鍵

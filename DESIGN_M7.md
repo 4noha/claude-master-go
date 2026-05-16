@@ -153,6 +153,29 @@ agent⇄unix socket⇄PtyProxy（バイト透過・xterm.js が描画）。
   ローカル 1＋リモート 8（実 PC D24WT27C3J）を描画、残存 socket 無し窓も
   除去を実機確認。
 
+### プロセス終了の同期（ghost 窓の除去）
+
+旧: `PushStatus` は **upsert のみ**で終了セッション doc を消さず、
+`ListSessions` が古い doc を返し続け ↗窓/dashboard 行が永久残留
+（whole-PC `DeletePC` まで消えない）＝ghost。
+
+修正: producer ループ（cloud agent）が **前 tick との in-memory 差分**で
+「居なくなったキー」を `state.DeleteSession` で Firestore から削除。
+起動時に `state.OwnSessionKeys` で `prev` を Firestore 実態で seed し
+agent 再起動中に終了した分も次 tick で回収。削除は CollectionGroup
+`sessions` の変更として **WatchSessions に push** され、各 consumer の
+`ReconcileRemote` が `desired` から外れた窓を `KillWindowID`＋
+`remote_sessions.json` を更新（dashboard も同期）。コスト: 追加読み
+ゼロ（in-memory 差分）・終了時のみ Delete 1 書込＝near-$0 不変。
+
+検証: 実エミュレータで PushStatus 2→DeleteSession→ListSessions/
+OwnSessionKeys が確実に縮む＋空/不在キー安全（`TestDeleteSession
+SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テスト
+担保。全 13 パッケージ緑。稼働 cloud agent を新バイナリで再起動し
+クリーン稼働（log エラー 0・remote 窓 8 安定）を実機確認。
+**注意**: 他 PC の終了セッションがこの PC の dashboard から消えるには
+**その PC の cloud agent もこの版へ更新**が必要（producer 側削除のため）。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。
