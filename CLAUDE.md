@@ -117,6 +117,15 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   静止時のみ。ストリーミング中は確定行を内部に capture するだけ。
 - **クリアは `\x1b[2J\x1b[9999;1H`**（全消去後カーソルを画面最下部へ）。
   claude は「カーソル最下部前提で下から描画」するため最上部だと崩れる。
+- **カーソル復元（必須）**: `RenderANSI` はフレーム末尾（`\x1b[?2026l`
+  直前）で `\x1b[<行>;<桁>H` を出し物理カーソルを VT モデル位置
+  (`v.cy/v.cx`) へ戻す。欠くと最終行末尾（≒右下）に残り IME preedit が
+  そこに出て**日本語入力が事実上不能**（半角直接入力は preedit 非表示で
+  露見しにくいだけで同一不具合）。桁は `draw()` が runewidth で進める
+  **表示桁**（rune 数で数えない＝全角で半分ずれる）。viewport 先頭絶対行
+  は `ScrollRenderer.lastOy`、行 = `len(hist)+cy-lastOy+1`。nav 遡りで
+  カーソルが viewport 外の時は出さない（読書中・IME 非使用）。回帰検知:
+  `internal/screen/cursor_test.go`（半角/全角/遡り外）。
 - claude --resume は `\x1b[2J` せず絶対座標で会話を再ストリーム→ pyte/VT
   が同内容を複数回スクロールし history が重複。dedup は禁手なので
   ファイル転写（SESSION_LOG）か `SIZE_POLICY=host` 生パススルーで対処。

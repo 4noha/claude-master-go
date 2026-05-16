@@ -18,6 +18,7 @@ type ScrollRenderer struct {
 	follow    bool
 	anchor    int // not-follow 時の viewport 先頭絶対 oy
 	lastMaxOy int // 直近 render の max_oy（Scroll() が screen 非依存なため）
+	lastOy    int // 直近 render の viewport 先頭絶対行（カーソル相対変換用）
 }
 
 func NewScrollRenderer() *ScrollRenderer { return &ScrollRenderer{follow: true} }
@@ -203,6 +204,7 @@ func (s *ScrollRenderer) ViewCells(hist, vis [][]cell, vrows int) [][]cell {
 		}
 		s.anchor = oy
 	}
+	s.lastOy = oy // RenderANSI がカーソル行を viewport 相対へ変換するのに使う
 	line := func(i int) []cell {
 		if i < len(hist) {
 			return hist[i]
@@ -238,6 +240,24 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 		if i+1 < len(rows) {
 			b.WriteString("\r\n")
 		}
+	}
+	// 物理カーソルを VT モデルのカーソル位置へ復元する。これが無いと
+	// 描画終了時にカーソルが最終行末尾（≒右下）に残り、IME の preedit
+	// がそこに出て日本語入力が事実上不能になる（半角直接入力は preedit
+	// が無いため露見しにくいが同じ不具合）。cx は draw() が runewidth
+	// で進める表示桁なので全角でも正しい。viewport 外（nav 遡り中）は
+	// 出さない＝従来挙動を維持（読書中で IME 非使用）。
+	cur := len(v.hist) + v.cy        // hist+vis 連結での絶対行
+	crow := cur - s.lastOy + 1       // viewport 内 1-based 行
+	ccol := v.cx + 1                 // 表示桁 1-based
+	if crow >= 1 && crow <= vrows {
+		if ccol < 1 {
+			ccol = 1
+		}
+		if ccol > vcols {
+			ccol = vcols
+		}
+		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
 	}
 	b.WriteString("\x1b[?2026l") // synchronized output end
 	return []byte(b.String())
