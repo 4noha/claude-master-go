@@ -41,6 +41,12 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   - 稼働 launchd 2 本: `com.4noha.claude-master`(monitor)/
     `com.4noha.claude-master-cloud`(cloud agent)。SA 鍵
     `~/.claude-master/sa.json` はリポジトリ外・600・非コミット。
+  - **M7 Web 管理 UI＋コード認証（設計確定: `DESIGN_M7.md`。実装中）**:
+    別 PC/ブラウザから SA 鍵不要・pairing code 入力だけで接続。既存
+    Cloud Run relay を Web 兼用へ拡張（ブラウザは GCP 資格情報を持たず
+    cookie、Firestore は Cloud Run ランタイム SA 経由）。relay の
+    バイト透過/既存 /session は無改変。M7a 認証コア/M7b Web backend/
+    M7c フロント(xterm.js)/M7d 実ブラウザ e2e(chrome-devtools)。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
