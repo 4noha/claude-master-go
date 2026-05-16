@@ -85,6 +85,16 @@ func (s *Server) Serve(sockPath string) error {
 
 func (s *Server) Done() <-chan struct{} { return s.done }
 
+// SetHostSize は host 端末サイズを更新し即再描画（SIGWINCH 時）。
+func (s *Server) SetHostSize(cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hCols, s.hRows = cols, rows
+	if s.host != nil {
+		_, _ = s.host.Write(s.hostSR.RenderANSI(s.p.VT, s.hRows, s.hCols))
+	}
+}
+
 func (s *Server) Stop() {
 	s.finalizeSessionLog() // 残り確定行＋最終可視画面を書いて閉じる
 	s.doneOnce.Do(func() { close(s.done) })

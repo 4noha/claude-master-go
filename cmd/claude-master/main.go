@@ -12,9 +12,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"golang.org/x/term"
 
 	"github.com/4noha/claude-master-go/internal/client"
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/ptyproxy"
 	"github.com/4noha/claude-master-go/internal/selfupdate"
 )
 
@@ -33,8 +38,7 @@ func main() {
 	case "update":
 		runUpdate()
 	case "proxy":
-		fmt.Fprintln(os.Stderr, "proxy: monitor 配線待ち（M5d）。")
-		os.Exit(1)
+		runProxy(os.Args[2:])
 	case "socket-client":
 		runSocketClient(os.Args[2:])
 	default:
@@ -71,6 +75,54 @@ func runUpdate() {
 		return
 	}
 	fmt.Printf("更新しました: %s → %s\n", version, tag)
+}
+
+// runProxy: claude-master proxy [claude args...]
+// 実 claude(cfg.RealClaude) を PTY ラップして起動し、host stdout +
+// sessions/<pid>.sock 多重化で中継（claude-wrap の置換＝cutover 中核）。
+func runProxy(args []string) {
+	cfg := config.Load()
+	if _, err := os.Stat(cfg.RealClaude); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"claude が見つかりません: %s（REAL_CLAUDE で指定）\n", cfg.RealClaude)
+		os.Exit(1)
+	}
+	stdoutFd := int(os.Stdout.Fd())
+	winSize := func() (int, int) {
+		c, r, err := term.GetSize(stdoutFd)
+		if err != nil {
+			return 80, 24
+		}
+		return c, r
+	}
+	var restore func()
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		if st, err := term.MakeRaw(int(os.Stdin.Fd())); err == nil {
+			restore = func() { _ = term.Restore(int(os.Stdin.Fd()), st) }
+		}
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGWINCH)
+
+	code, err := ptyproxy.RunProxy(ptyproxy.ProxyOpts{
+		Argv:     append([]string{cfg.RealClaude}, args...),
+		Cfg:      cfg,
+		HostIn:   os.Stdin,
+		HostOut:  os.Stdout,
+		WinSize:  winSize,
+		Sigwinch: sig,
+	})
+	signal.Stop(sig)
+	if restore != nil {
+		restore()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "proxy:", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // runSocketClient: claude-master socket-client [--retry] <sock>

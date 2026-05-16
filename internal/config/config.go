@@ -34,10 +34,12 @@ type Config struct {
 	NavWheelStep      int
 	SessionLog        string // "" 無効 / "true" 自動 / パス
 
-	LogFile    string
-	StatusFile string
-	PidFile    string
-	ConfigFile string
+	LogFile     string
+	StatusFile  string
+	PidFile     string
+	ConfigFile  string
+	RealClaude  string // 本物の claude バイナリ（proxy がラップする対象）
+	SessionsDir string // <pid>.sock / <pid>.status.json の置き場
 }
 
 func home(p string) string {
@@ -108,10 +110,12 @@ func Load() *Config {
 		NavWheelStep:      integer("NAV_WHEEL_STEP", 3, 1, 1000),
 		SessionLog:        strings.TrimSpace(str("SESSION_LOG", "")),
 
-		LogFile:    home(".claude-master.log"),
-		StatusFile: home(".claude-master.status.json"),
-		PidFile:    home(".claude-master.pid"),
-		ConfigFile: cf,
+		LogFile:     home(".claude-master.log"),
+		StatusFile:  home(".claude-master.status.json"),
+		PidFile:     home(".claude-master.pid"),
+		ConfigFile:  cf,
+		RealClaude:  str("REAL_CLAUDE", home(".local/bin/claude")),
+		SessionsDir: home(".claude-master/sessions"),
 	}
 }
 
