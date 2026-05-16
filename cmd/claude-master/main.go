@@ -4,6 +4,7 @@
 //	claude-master version       バージョン
 //	claude-master update        最新リリースへ自己更新（sha256 検証）
 //	claude-master proxy [args]  claude を PTY ラップ（M3 で実装）
+//	claude-master socket-client [--retry] <sock>  PTY プロキシへ接続（M5c）
 //
 // version は -ldflags "-X main.version=..." で埋め込む（goreleaser）。
 package main
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/4noha/claude-master-go/internal/client"
 	"github.com/4noha/claude-master-go/internal/config"
 	"github.com/4noha/claude-master-go/internal/selfupdate"
 )
@@ -31,8 +33,10 @@ func main() {
 	case "update":
 		runUpdate()
 	case "proxy":
-		fmt.Fprintln(os.Stderr, "proxy: 未実装（DESIGN.md M3）。先に M2(VT モデル)。")
+		fmt.Fprintln(os.Stderr, "proxy: monitor 配線待ち（M5d）。")
 		os.Exit(1)
+	case "socket-client":
+		runSocketClient(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -69,7 +73,31 @@ func runUpdate() {
 	fmt.Printf("更新しました: %s → %s\n", version, tag)
 }
 
+// runSocketClient: claude-master socket-client [--retry] <sock>
+func runSocketClient(args []string) {
+	retry := false
+	var sock string
+	for _, a := range args {
+		if a == "--retry" {
+			retry = true
+			continue
+		}
+		if sock == "" {
+			sock = a
+		}
+	}
+	if sock == "" {
+		fmt.Fprintln(os.Stderr,
+			"usage: claude-master socket-client [--retry] <socket_path>")
+		os.Exit(2)
+	}
+	if err := client.Run(sock, retry, config.Load()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master {config|update|version|proxy}")
+		"usage: claude-master {config|update|version|proxy|socket-client}")
 }
