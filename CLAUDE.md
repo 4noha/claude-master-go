@@ -10,9 +10,16 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
 - 稼働ベース（`claude-wrap`/launchd/このPC）の実切替は **Go が M2〜M5 を
   実録画検証で通ってから**。それまで Python を動かし続ける（環境を壊さない）。
   `~/.claude-master.toml` は両者同一キー＝設定移行不要（M1 で parity 確認済）。
-- マイルストーン: **M1 config ✅** / M2 VT モデル(山場) / M3 ptyproxy /
-  M4 nav・pagekey・wheel・quiescence / M5 monitor・tmux / M6 GCP 同期。
-  各 M は build＋実録画テスト緑で前進（合成では緑判定しない）。
+- マイルストーン: **M1 config ✅** / **M2 VT モデル ✅** / **M3 ptyproxy ✅** /
+  **M4 nav・pagekey・wheel・SESSION_LOG ✅** / M5 monitor・tmux・socket_client /
+  M6 GCP 同期。各 M は build＋実録画テスト緑で前進（合成では緑判定しない）。
+  - M4 内訳: M4a `IsLiveResetKey`/`ClassifyWheel`（Python 厳密ケース同値）、
+    M4b `Server.HandleHostInput`（host nav/pagekey/wheel 状態機械。Python
+    `_handle_host_stdin` と判定順含め 1:1、実 VT＋display-oracle 検証）、
+    M4c `HistoryFlusher`＋`SESSION_LOG`（実 resume-burst 録画を本番
+    capture 経路で転写・ANSI 無・dedup 無、`test_session_log.py` と 1:1）。
+  - HOST_FLOW_SCROLLBACK は実 Claude で構造的に不完全（Python 既知制約）
+    のため Go へは未移植（SESSION_LOG で代替＝描画非依存で安全）。
 
 ## 開発の鉄則（Python 版で何度も破って学んだ）
 
@@ -75,9 +82,9 @@ nav-mode/PAGEKEY/WHEEL は「キーが pty まで届く」のが前提。届か�
 | Python | Go pkg | 状態/備考 |
 |--------|--------|-----------|
 | config.py | `internal/config` | ✅ M1。env > ~/.claude-master.toml > 既定。NAV_KEY パーサ移植・実 toml で Python と全項目一致 |
-| pty_scroll.py / pty_emulator.py | `internal/screen` | M2(山場)。pyte 相当の VT モデル選定（`hinshun/vt10x`/`charmbracelet/x/vt`/自前）＋ history.top ＋ 先頭アンカー ＋ render_viewport ＋ HistoryFlusher |
-| pty_proxy.py | `internal/ptyproxy` | M3。creack/pty で fork+execv、x/sys/unix で TIOCSWINSZ、unix socket 多重化 |
-| socket_client.py | `internal/client` | M4。unix socket + x/term raw mode、nav/pagekey/wheel、is_live_reset_key |
+| pty_scroll.py / pty_emulator.py | `internal/screen` | ✅ M2(山場)。自前 VT モデル（vt10x/x/vt はデータで棄却）＋ history.top ＋ 先頭アンカー ＋ render_viewport。✅ M4c HistoryFlusher/line_to_text/IsLiveResetKey/ClassifyWheel |
+| pty_proxy.py | `internal/ptyproxy` | ✅ M3 creack/pty fork+exec＋unix socket 多重化＋RESIZE/SCROLL。✅ M4b `HandleHostInput`（host nav/pagekey/wheel）＋ M4c `SESSION_LOG` |
+| socket_client.py | `internal/client` | M5。unix socket + x/term raw mode、client 側 nav/pagekey/wheel（host 側分類器は M4 で移植済・共有） |
 | monitor/process_scanner/tmux_manager | `internal/monitor` | M5。os/exec で ps/lsof/tmux |
 | debug/ replay+display-oracle | `test/` + 流用 fixtures | 全 M で実録画回帰 |
 | （新規）クラウド同期 | `internal/sync` 等 | M6。FCM wake + Cloud Run WSS + Firestore（DESIGN.md）|
