@@ -11,8 +11,19 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   実録画検証で通ってから**。それまで Python を動かし続ける（環境を壊さない）。
   `~/.claude-master.toml` は両者同一キー＝設定移行不要（M1 で parity 確認済）。
 - マイルストーン: **M1 config ✅** / **M2 VT モデル ✅** / **M3 ptyproxy ✅** /
-  **M4 nav・pagekey・wheel・SESSION_LOG ✅** / M5 monitor・tmux・socket_client /
-  M6 GCP 同期。各 M は build＋実録画テスト緑で前進（合成では緑判定しない）。
+  **M4 nav・pagekey・wheel・SESSION_LOG ✅** /
+  **M5 monitor・tmux・socket_client・実行可能 proxy ✅（中核）** /
+  M5e 使用量上限 自動中断/再開（cutover 前の完全 parity に必要）/
+  M6 GCP 同期。各 M は build＋実録画/実環境テスト緑で前進（合成では緑判定しない）。
+  - M5 内訳: M5a scanner（ps/lsof・実環境 5 セッション実検出）、M5b tmux
+    （実 tmux 隔離セッション CRUD）、M5c socket_client（実 socket→実
+    Server→pan を display-oracle）、M5d-1 実行可能 proxy（claude-wrap
+    置換＝cutover 中核・実録画ラップ統合検証）、M5d-2 monitor ループ
+    ＋start/stop/status＋最小 dashboard（実 scan→実 tmux 同期）。
+  - M5e（未移植）: limit_watcher/resume_scheduler（使用量上限の自動
+    中断/再開）＋ proxy の使用量ヒューリスティック status 書出
+    （extract_usage/is_active）＋ 完全版 dashboard。cutover はこの
+    完全 parity 検証後（Python は M5e 完了まで稼働継続）。
   - M4 内訳: M4a `IsLiveResetKey`/`ClassifyWheel`（Python 厳密ケース同値）、
     M4b `Server.HandleHostInput`（host nav/pagekey/wheel 状態機械。Python
     `_handle_host_stdin` と判定順含め 1:1、実 VT＋display-oracle 検証）、
@@ -84,8 +95,11 @@ nav-mode/PAGEKEY/WHEEL は「キーが pty まで届く」のが前提。届か�
 | config.py | `internal/config` | ✅ M1。env > ~/.claude-master.toml > 既定。NAV_KEY パーサ移植・実 toml で Python と全項目一致 |
 | pty_scroll.py / pty_emulator.py | `internal/screen` | ✅ M2(山場)。自前 VT モデル（vt10x/x/vt はデータで棄却）＋ history.top ＋ 先頭アンカー ＋ render_viewport。✅ M4c HistoryFlusher/line_to_text/IsLiveResetKey/ClassifyWheel |
 | pty_proxy.py | `internal/ptyproxy` | ✅ M3 creack/pty fork+exec＋unix socket 多重化＋RESIZE/SCROLL。✅ M4b `HandleHostInput`（host nav/pagekey/wheel）＋ M4c `SESSION_LOG` |
-| socket_client.py | `internal/client` | M5。unix socket + x/term raw mode、client 側 nav/pagekey/wheel（host 側分類器は M4 で移植済・共有） |
-| monitor/process_scanner/tmux_manager | `internal/monitor` | M5。os/exec で ps/lsof/tmux |
+| socket_client.py | `internal/client` | ✅ M5c unix socket + x/term raw・client 側 nav/pagekey/wheel（分類器は M4 共有）・実 socket→Server pan を display-oracle 検証 |
+| process_scanner.py | `internal/scanner` | ✅ M5a ps/lsof・実環境 5 セッション実検出 |
+| tmux_manager.py | `internal/tmux` | ✅ M5b 実 tmux 隔離セッション CRUD |
+| monitor.py | `internal/monitor` | ✅ M5d-2 scan 差分→tmux 同期＋start/stop/status＋最小 dashboard。limit_watcher/resume_scheduler は M5e |
+| pty_proxy.py main/run/_loop | `internal/ptyproxy` (RunProxy) | ✅ M5d-1 実行可能 proxy＝claude-wrap 置換（cutover 中核）。使用量 status は M5e |
 | debug/ replay+display-oracle | `test/` + 流用 fixtures | 全 M で実録画回帰 |
 | （新規）クラウド同期 | `internal/sync` 等 | M6。FCM wake + Cloud Run WSS + Firestore（DESIGN.md）|
 
