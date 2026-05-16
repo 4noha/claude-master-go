@@ -176,10 +176,10 @@ SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テス
 **注意**: 他 PC の終了セッションがこの PC の dashboard から消えるには
 **その PC の cloud agent もこの版へ更新**が必要（producer 側削除のため）。
 
-## M7j: Web コンソール UX（dir 表示／スワイプ切替／サイズ非送信）
+## M7j: Web コンソール UX（dir 表示／スワイプ切替）
 
-要望 3 点を term.js / devices.js / ui.go(termHTML) で実装（relay・
-protocol は無改変＝不変条件死守）。
+要望を term.js / devices.js / ui.go(termHTML) で実装（relay・protocol
+は無改変＝不変条件死守）。
 
 - **ディレクトリ名表示**: devices.js の /term リンクに `&dir=` を付与、
   term.js が `qs.get("dir")` をバー（`#title`）と `document.title` に
@@ -190,24 +190,35 @@ protocol は無改変＝不変条件死守）。
   左右スワイプ（touchstart/end のΔx>60 かつ |Δx|>|Δy|*1.4、左=次/
   右=前、巡回）で隣の /term へ location 遷移（WS/xterm はページ遷移で
   クリーン再接続）。取得失敗時は無効化しターミナルは使用可。
-- **ウィンドウサイズ非送信**: Web は RESIZE フレームを一切送らない
-  受動ビューア。理由＝SIZE_POLICY=client では「最後に resize した
-  client に PTY が追従」するためブラウザ窓が相手 PC の claude/tmux を
-  引きずる。term.js は固定 80x24（proxy 既定 viewport と一致＝表示・
-  カーソル整合）、FitAddon 不使用、resize リスナ無送出。trade-off:
-  モデルが 80x24 超なら Web は左上 80x24 のみ表示（サイズ非送信の
-  必然。ローカル tmux/host を正に保つための意図的選択）。
 
-検証（多層）: ① go test（実 handler＋実 embed FS で served バイトに
-swipe/dir/prev-next の存在＋RESIZE 送出コード `resizeFrame`/`0xff`
-不在を機械検証）② node --check 構文 ③ **実ブラウザ（chrome-devtools）
-ハーネス**: 実 term.js をスタブ WebSocket/Terminal/fetch 上で動かし
-`#title=proj-beta — PC-A`・`document.title`・`#pos=(2/4)`・固定 80x24・
-`__sent`空（サイズ非送信）・JS エラー無しを確認、`‹›`クリックと
+### RESIZE 送信に関する重要な訂正（誤診→撤回）
+
+当初「Web は窓サイズ非送信にする」変更を入れたが、根拠が誤りだった
+ため**撤回し socket-client 同様 RESIZE を送る実装へ戻した**。
+
+- 誤った前提: 「SIZE_POLICY=client/largest で最後に resize した
+  client へ PTY が追従しブラウザが claude/tmux を引きずる」。これは
+  **Python 設計のセマンティクスで Go 移植版には存在しない**。
+- Go の実機構（コード確認済）: `p.Setsize()` を呼ぶ唯一の経路は
+  `run.go` の host SIGWINCH のみ。`server.go` の client RESIZE は
+  `c.rows/c.cols` を更新し**その client 自身の per-client ビューポート
+  を再描画するだけ**で PTY/claude を変えない。`SizePolicy` は
+  `=="host"`（生パススルー）しか分岐せず `client/largest/smallest/
+  latest` は未実装（config パースのみ存在）。よって live 設定
+  `size_policy="largest"` でも実質 client と同じ＝PTY は host 追従・
+  各 client は独立ミニ tmux。
+- 帰結: Web の RESIZE は他者に無影響。送らないと proxy 既定 80x24 に
+  固定され claude 画面が見切れる純粋なデグレだった。tmux socket-client
+  も `client.go sendResize` で接続時＋SIGWINCH に RESIZE を送って
+  おり、Web も同じプロトコルに揃えるのが正。
+
+検証（多層）: ① go test（実 handler＋実 embed FS で swipe/dir/
+prev-next の存在＋**RESIZE 送出コード `resizeFrame`/`0xff`/
+`term.rows, term.cols` の存在**を機械検証）② node --check 構文
+③ **実ブラウザ（chrome-devtools）ハーネス**で `#title=proj-beta —
+PC-A`・`document.title`・`#pos=(2/4)`・JS エラー無し、`‹›`クリックと
 **合成左スワイプ**双方が `/term?pc=PC-B&sid=b1&dir=gamma`（正しい
-隣）へ遷移することを確認 ④ 実デプロイ relay(rev 00008) の
-`/static/term.js` が新版（resizeFrame 0 件）であることを確認。
-全 13 パッケージ緑。
+隣）へ遷移を確認。全 13 パッケージ緑。
 
 ## 不変条件継承
 

@@ -1,19 +1,27 @@
 // Web ターミナル本体（/term?pc=&sid=&dir=）。端末一覧からリンクで開く。
-// relay の frame protocol をそのまま話す（無改変）。ただし Web は
-// RESIZE を送らない受動ビューア（理由は下記 VIEW_* コメント）。
-// バー表示にディレクトリ名、左右スワイプ／‹›でコンソール切替。
+// relay の RESIZE/frame protocol をそのまま話す（無改変）。バー表示に
+// ディレクトリ名、左右スワイプ／‹›でコンソール切替。
+//
+// RESIZE について: Go proxy では client（tmux socket-client/Web）の
+// RESIZE は **その client 自身の per-client ビューポート描画サイズ**を
+// 決めるだけで、PTY/claude のサイズは変えない（PTY は host=proxy 起動
+// 端末の SIGWINCH のみ追従）。Python 設計の client/largest PTY 追従は
+// Go へ未移植（host 生パススルーのみ特別扱い）。よって Web は
+// socket-client と同様に窓サイズを送ってよい（他者影響なし）。送らない
+// と proxy 既定 80x24 の小窓に固定され claude 画面が見切れるため送る。
 "use strict";
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const qs = new URLSearchParams(location.search);
 const pc = qs.get("pc"), sid = qs.get("sid"), dir = qs.get("dir") || "";
 
-// Web コンソールは **ウィンドウサイズを送信しない**（RESIZE 不送出）。
-// SIZE_POLICY=client では「最後に resize した client に PTY が追従」
-// するため、ブラウザがサイズを送ると相手 PC の claude / tmux が
-// ブラウザ窓サイズに引きずられる。Web は受動ビューアに徹し、proxy
-// 既定（80x24）の viewport をそのまま受け取る。
-const VIEW_COLS = 80, VIEW_ROWS = 24;
+function resizeFrame(rows, cols) {
+  const b = new Uint8Array(6);
+  b[0] = 0xff; b[1] = 0xff;
+  b[2] = (rows >> 8) & 0xff; b[3] = rows & 0xff;
+  b[4] = (cols >> 8) & 0xff; b[5] = cols & 0xff;
+  return b;
+}
 
 async function jget(u) {
   const r = await fetch(u, { headers: { Accept: "application/json" } });
@@ -91,12 +99,12 @@ function run() {
 
   setupSwitch();
 
-  // サイズ非送信のため固定 80x24（proxy 既定 viewport と一致させ
-  // 表示・カーソル整合を保つ）。FitAddon は使わない（窓追従＝サイズ
-  // 変化送出になるため）。
-  const term = new Terminal({ cursorBlink: true, cols: VIEW_COLS,
-    rows: VIEW_ROWS, fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
+  const term = new Terminal({ cursorBlink: true,
+    fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
   term.open($("term-host"));
+  fit.fit();
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(proto + "//" + location.host + "/ws?pc=" +
@@ -104,7 +112,7 @@ function run() {
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    // RESIZE フレームは送らない（受動ビューア）。
+    ws.send(resizeFrame(term.rows, term.cols)); // 自分のビューポートサイズ
     $("stat").textContent = "接続済";
   };
   ws.onmessage = (ev) => term.write(new Uint8Array(ev.data));
@@ -114,6 +122,9 @@ function run() {
   term.onData((d) => {
     if (ws.readyState === 1) ws.send(enc.encode(d));
   });
-  // window resize でも RESIZE は送出しない（意図的に何もしない）。
+  window.addEventListener("resize", () => {
+    fit.fit();
+    if (ws.readyState === 1) ws.send(resizeFrame(term.rows, term.cols));
+  });
 }
 run();

@@ -293,12 +293,14 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
 		}
 	}
-	// Web コンソールは RESIZE を送らない（窓サイズ非送信）。送出コード
-	// （resizeFrame 関数・0xff マジック構築）が無いことを機械検証。
+	// Web は socket-client 同様 RESIZE を送りブラウザ窓サイズの
+	// per-client ビューポートを得る（Go では client RESIZE は PTY/claude
+	// を変えず自分の描画サイズのみ。送らないと proxy 既定 80x24 に固定
+	// され見切れる）。送出コードの存在を機械検証。
 	tj := bodyStr(do("/static/term.js"))
-	for _, banned := range []string{"resizeFrame", "0xff", "0xFF"} {
-		if strings.Contains(tj, banned) {
-			t.Fatalf("term.js に RESIZE 送出コード %q が残存（窓サイズ非送信のはず）", banned)
+	for _, want := range []string{"resizeFrame", "0xff", "term.rows, term.cols"} {
+		if !strings.Contains(tj, want) {
+			t.Fatalf("term.js に RESIZE 送出コード %q が無い（ブラウザ窓サイズ送信のはず）", want)
 		}
 	}
 	if n := bodyLen(do("/static/xterm.js")); n < 100000 {

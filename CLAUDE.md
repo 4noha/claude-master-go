@@ -129,10 +129,24 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
 - claude --resume は `\x1b[2J` せず絶対座標で会話を再ストリーム→ pyte/VT
   が同内容を複数回スクロールし history が重複。dedup は禁手なので
   ファイル転写（SESSION_LOG）か `SIZE_POLICY=host` 生パススルーで対処。
-- **モード**（`SIZE_POLICY`、既定 `client`=tmux 基準）: client / host
-  (生パススルー) / largest / smallest / latest。`largest` 等は host も
-  ScrollRenderer 再描画。`_apply_pty_size` は **実 host 端末サイズを毎回
-  読み直す**（古い値固定だと largest が client サイズに張り付く実バグ）。
+- **モード**（`SIZE_POLICY`、既定 `client`）: 設計上は client / host
+  (生パススルー) / largest / smallest / latest。
+  **⚠ Go 実装の現状（重要・Python と差異）**: proxy が分岐するのは
+  `SizePolicy=="host"`（生パススルー）**のみ**。`client/largest/
+  smallest/latest` は未実装で、config パース以外に効果が無く全て
+  同一挙動になる。具体的には:
+  - PTY/claude サイズを変えるのは `run.go` の **host SIGWINCH のみ**
+    （`p.Setsize()` の唯一の呼び出し元）。host = `claude-master proxy`
+    を起動した端末。
+  - tmux `socket-client`・Web 等の client が送る RESIZE は
+    `server.go` で **その client 自身の per-client ビューポート描画
+    サイズ**を決めるだけ（`c.rows/c.cols`→`renderClientLocked`）。
+    PTY/claude/他 client には一切影響しない（＝独立ミニ tmux）。
+  - したがって Python 設計の「最後に/最大の client へ PTY 追従」は
+    Go には無い。`size_policy="largest"` 設定でも実質 client と同じ。
+  この差異を `client/largest` で PTY が動く前提で語らないこと
+  （Web RESIZE 誤診の温床になった）。実装するなら server.go に
+  client サイズ集約＋`p.Setsize` 経路を新設する必要がある。
 
 ## 端末キー到達性（Mac JIS / VSCode / Terminal.app）
 
