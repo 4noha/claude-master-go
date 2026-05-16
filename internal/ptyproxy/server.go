@@ -48,6 +48,13 @@ type Server struct {
 	logsDir  string
 	sessFp      *os.File               // SESSION_LOG 出力先（nil=無効）
 	sessFlusher *screen.HistoryFlusher // 確定行 capture/drain
+	// 使用量ステータス（M5e）: <SessionsDir>/<pid>.status.json
+	statusPath  string
+	statusPid   int
+	statusScan  *screen.StatusScanner
+	statusLast  time.Time
+	statusSig   string // 直近 payload の usage+active シグネチャ
+	statusInit  bool   // 初回は必ず書く（Python の None 比較相当）
 	done     chan struct{}
 	doneOnce sync.Once
 }
@@ -134,6 +141,7 @@ func (s *Server) masterPump() {
 			s.mu.Lock()
 			s.p.VT.Feed(buf[:n])
 			s.sessionLogCaptureLocked() // 確定行をファイルへ（描画非依存）
+			s.maybeWriteStatusLocked()  // 使用量 status（5s スロットル）
 			s.broadcastLocked()
 			s.mu.Unlock()
 		}

@@ -58,7 +58,14 @@ func RunProxy(o ProxyOpts) (int, error) {
 	if err := srv.Serve(sockPath); err != nil {
 		return 1, fmt.Errorf("serve %s: %w", sockPath, err)
 	}
-	defer func() { srv.Stop(); _ = os.Remove(sockPath) }()
+	statusPath := filepath.Join(cfg.SessionsDir,
+		fmt.Sprintf("%d.status.json", p.Pid()))
+	srv.EnableStatus(statusPath, p.Pid()) // 使用量 status（M5e）
+	defer func() {
+		srv.Stop()
+		_ = os.Remove(sockPath)
+		_ = os.Remove(statusPath)
+	}()
 
 	// host stdin → HandleHostInput（nav/pagekey/wheel/通常転送）
 	if o.HostIn != nil {
