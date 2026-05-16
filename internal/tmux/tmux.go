@@ -105,6 +105,21 @@ func contains(ss []string, v string) bool {
 
 // AddWindow はセッション用 window を作る（既存があれば再利用）。
 // socketPath があれば socket_client を、無ければ cwd で対話シェルを起動。
+// EnsureCmdWindow は key に対応する window で任意コマンドを実行する
+// （無ければ base から一意名で作成、あれば再利用）。リモート PC の
+// claude セッションを cloud attach で this PC の tmux へ同期するのに使う。
+func (m *Manager) EnsureCmdWindow(key, base, command string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ex := m.keyToWindow[key]; ex != "" && contains(m.ListWindows(), ex) {
+		return ex
+	}
+	name := m.uniqueName(base)
+	out("new-window", "-t", m.Session, "-n", name, command)
+	m.keyToWindow[key] = name
+	return name
+}
+
 func (m *Manager) AddWindow(s scanner.ClaudeSession, socketPath string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

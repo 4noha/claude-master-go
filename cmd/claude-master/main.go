@@ -33,6 +33,7 @@ import (
 	"github.com/4noha/claude-master-go/internal/monitor"
 	"github.com/4noha/claude-master-go/internal/ptyproxy"
 	"github.com/4noha/claude-master-go/internal/selfupdate"
+	"github.com/4noha/claude-master-go/internal/tmux"
 )
 
 var version = "dev"
@@ -404,6 +405,22 @@ func runCloudAgent(cfg *config.Config) {
 			}
 		}
 	}()
+	// 他 PC の claude セッションを this PC の tmux に窓として同期
+	// （各窓は cloud attach の再接続ループ＝viewer）。
+	if mgr, merr := tmux.NewManager(cfg.TmuxSession); merr == nil {
+		mgr.EnsureSession()
+		self, _ := os.Executable()
+		sa := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+		wc := func(pc, sid, dir string) string {
+			return fmt.Sprintf("while true; do env GCP_PROJECT=%s "+
+				"CLOUD_RELAY_URL=%s GOOGLE_APPLICATION_CREDENTIALS=%s "+
+				"%s cloud attach %s --pc %s; sleep 3; done",
+				cfg.GCPProject, cfg.CloudRelayURL, sa, self, sid, pc)
+		}
+		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc, 5*time.Second)
+	} else {
+		fmt.Fprintln(os.Stderr, "remote tmux 同期スキップ（tmux 無し）:", merr)
+	}
 	ag := &agent.Agent{
 		St: st, RelayURL: cfg.CloudRelayURL,
 		ResolveSock: resolveSock(cfg), IdleClose: 30 * time.Second,
