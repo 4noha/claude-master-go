@@ -19,6 +19,7 @@ import (
 
 	"github.com/4noha/claude-master-go/internal/client"
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/monitor"
 	"github.com/4noha/claude-master-go/internal/ptyproxy"
 	"github.com/4noha/claude-master-go/internal/selfupdate"
 )
@@ -41,6 +42,8 @@ func main() {
 		runProxy(os.Args[2:])
 	case "socket-client":
 		runSocketClient(os.Args[2:])
+	case "monitor":
+		runMonitor(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -125,6 +128,49 @@ func runProxy(args []string) {
 	os.Exit(code)
 }
 
+// runMonitor: claude-master monitor [start|stop|status|--daemon|--dashboard]
+func runMonitor(args []string) {
+	cfg := config.Load()
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "start":
+		exitErr(monitor.CmdStart(cfg, os.Stdout))
+	case "stop":
+		exitErr(monitor.CmdStop(cfg, os.Stdout))
+	case "status":
+		exitErr(monitor.CmdStatus(cfg, os.Stdout))
+	case "--dashboard":
+		done := sigDone()
+		monitor.Dashboard(cfg, done, os.Stdout)
+	case "", "--daemon":
+		done := sigDone()
+		exitErr(monitor.CmdRun(cfg, done, os.Stdout))
+	default:
+		fmt.Fprintln(os.Stderr,
+			"usage: claude-master monitor [start|stop|status|--daemon]")
+		os.Exit(2)
+	}
+}
+
+// sigDone は SIGTERM/SIGINT で閉じる done チャネル。
+func sigDone() <-chan struct{} {
+	done := make(chan struct{})
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	go func() { <-ch; close(done) }()
+	return done
+}
+
+func exitErr(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
 // runSocketClient: claude-master socket-client [--retry] <sock>
 func runSocketClient(args []string) {
 	retry := false
@@ -151,5 +197,5 @@ func runSocketClient(args []string) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master {config|update|version|proxy|socket-client}")
+		"usage: claude-master {config|update|version|proxy|socket-client|monitor}")
 }

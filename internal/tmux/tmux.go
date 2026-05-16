@@ -234,6 +234,15 @@ func itoa(i int) string {
 	return string(b[n:])
 }
 
+// AdoptWindow はキー→既存 window 名の対応を登録する（monitor 再起動
+// 時に STATUS_FILE から復元＝重複ウィンドウ防止。Python が
+// _key_to_window へ直接代入していた箇所の公開版）。
+func (m *Manager) AdoptWindow(key, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.keyToWindow[key] = name
+}
+
 // WindowFor はキーに対応する window 名（無ければ ""）。
 func (m *Manager) WindowFor(key string) string {
 	m.mu.Lock()
