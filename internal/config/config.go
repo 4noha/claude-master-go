@@ -40,6 +40,7 @@ type Config struct {
 	ConfigFile  string
 	RealClaude  string // 本物の claude バイナリ（proxy がラップする対象）
 	SessionsDir string // <pid>.sock / <pid>.status.json の置き場
+	PendingFile string // 再開スケジュール永続化（monitor 再起動跨ぎ）
 }
 
 func home(p string) string {
@@ -116,6 +117,7 @@ func Load() *Config {
 		ConfigFile:  cf,
 		RealClaude:  str("REAL_CLAUDE", home(".local/bin/claude")),
 		SessionsDir: home(".claude-master/sessions"),
+		PendingFile: home(".claude-master/pending_resumes.json"),
 	}
 }
 

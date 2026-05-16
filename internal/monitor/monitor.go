@@ -128,17 +128,104 @@ func restoreWindows(cfg *config.Config, mgr *tmux.Manager) {
 	}
 }
 
-// RunLoop は scan→同期→status 書出を PollInterval 間隔で回す。
-// done が閉じたら終了（Python run_loop + シグナル）。
+const (
+	escByte      = "\x1b"
+	interruptFmt = "\n⚠ Usage limit at %d%% (resets: %s). 現在の作業状態を要約して一時停止してください。\n"
+	resumeMsg    = "プラン制限がリセットされました。中断前の作業を再開してください。\n"
+)
+
+// handleLimitEvent は Python _handle_limit_event の移植。approaching /
+// idle は警告リネームのみ、active な interrupt/reached は socket へ
+// 中断メッセージ送信＋再開スケジュール＋[PAUSED] リネーム。
+func handleLimitEvent(cfg *config.Config, mgr *tmux.Manager,
+	sch *ResumeScheduler, ev *LimitEvent, s scanner.ClaudeSession,
+	status map[string]any) {
+
+	reset := strings.TrimSpace(statusStr(status, "reset_time") + " " +
+		statusStr(status, "reset_tz"))
+	// is_active は明示 false の時のみ idle（旧版互換で既定 true）
+	isActive := true
+	if v, ok := status["is_active"].(bool); ok {
+		isActive = v
+	}
+	if ev.Level == LevelApproaching {
+		mgr.RenameWindow(s.Key(), fmt.Sprintf("%s[⚠%d%%]", s.ShortDir(), ev.UsagePercent))
+		return
+	}
+	if !isActive {
+		mgr.RenameWindow(s.Key(), fmt.Sprintf("%s[⚠%d%%]", s.ShortDir(), ev.UsagePercent))
+		return
+	}
+	sock := sockPathFor(cfg, s.Pid)
+	if _, err := os.Stat(sock); err == nil {
+		SendToSocket(sock, []byte(escByte+
+			fmt.Sprintf(interruptFmt, ev.UsagePercent, reset)))
+		sch.Schedule(ev, sock)
+	}
+	mgr.RenameWindow(s.Key(), s.ShortDir()+"[PAUSED]")
+}
+
+// resumeSessions は Python _resume_sessions の移植。
+func resumeSessions(sch *ResumeScheduler, cur map[string]scanner.ClaudeSession,
+	mgr *tmux.Manager, w *LimitWatcher) {
+	for _, kv := range sch.Due(time.Now()) {
+		key, sock := kv[0], kv[1]
+		if _, err := os.Stat(sock); err == nil {
+			SendToSocket(sock, []byte(resumeMsg))
+		}
+		w.Clear(key)
+		if s, ok := cur[key]; ok {
+			mgr.RenameWindow(key, s.ShortDir())
+		}
+	}
+}
+
+// RunLoop は scan→同期→上限処理→再開→status 書出を PollInterval 間隔で
+// 回す（Python run_loop 完全移植）。done が閉じたら終了。
 func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 	known := map[string]scanner.ClaudeSession{}
+	w := NewLimitWatcher(cfg)
+	sch := NewResumeScheduler(cfg.PendingFile)
 	interval := time.Duration(cfg.PollInterval) * time.Second
 	if interval <= 0 {
 		interval = time.Second
 	}
 	for {
 		sessions, _ := scanner.Scan(false)
-		known = SyncOnce(cfg, mgr, known, sessions)
+		current := map[string]scanner.ClaudeSession{}
+		for _, s := range sessions {
+			current[s.Key()] = s
+		}
+		for key, s := range current {
+			if _, ok := known[key]; !ok {
+				sock := sockPathFor(cfg, s.Pid)
+				if _, err := os.Stat(sock); err != nil {
+					sock = ""
+				}
+				mgr.AddWindow(s, sock)
+				continue
+			}
+			status := readSessionStatus(cfg, s.Pid)
+			if ev := w.Check(key, status); ev != nil {
+				handleLimitEvent(cfg, mgr, sch, ev, s, status)
+			} else if sch.IsPending(key) {
+				if a, ok := status["is_active"].(bool); ok && a {
+					// スケジュール済みだが active = 手動再開
+					sch.Remove(key)
+					w.Clear(key)
+					mgr.RenameWindow(key, s.ShortDir())
+				}
+			}
+		}
+		for key := range known {
+			if _, ok := current[key]; !ok {
+				mgr.RemoveWindow(key)
+				w.Clear(key)
+				sch.Remove(key)
+			}
+		}
+		resumeSessions(sch, current, mgr, w)
+		known = current
 		cur := make([]scanner.ClaudeSession, 0, len(known))
 		for _, s := range known {
 			cur = append(cur, s)
