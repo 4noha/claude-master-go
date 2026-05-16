@@ -417,7 +417,7 @@ func runCloudAgent(cfg *config.Config) {
 				"%s cloud attach %s --pc %s; sleep 3; done",
 				cfg.GCPProject, cfg.CloudRelayURL, sa, self, sid, pc)
 		}
-		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc, 5*time.Second)
+		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc)
 	} else {
 		fmt.Fprintln(os.Stderr, "remote tmux 同期スキップ（tmux 無し）:", merr)
 	}

@@ -120,6 +120,61 @@ func (m *Manager) EnsureCmdWindow(key, base, command string) string {
 	return name
 }
 
+// MarkedWindows は pane_start_command に needle を含む窓を
+// **window_id → start_command** で返す（リモート同期の stateless 在席
+// 判定。window_id 一意キーなので同一コマンドの重複窓も別個に列挙でき、
+// runaway で増えた重複窓を検出・自己修復できる。in-process マップに
+// 依存せず agent 再起動/auto-rename に強い）。
+func (m *Manager) MarkedWindows(needle string) map[string]string {
+	o := out("list-windows", "-t", m.Session, "-F",
+		"#{window_id}\t#{pane_start_command}")
+	res := map[string]string{}
+	if o == "" {
+		return res
+	}
+	for _, ln := range strings.Split(o, "\n") {
+		i := strings.IndexByte(ln, '\t')
+		if i < 0 {
+			continue
+		}
+		id, cmd := ln[:i], ln[i+1:]
+		if strings.Contains(cmd, needle) {
+			res[id] = cmd // window_id をキー（重複窓も別エントリ）
+		}
+	}
+	return res
+}
+
+// NewWindow は窓を作って window_id(@N) を返す。auto-rename を切り
+// （ラベルが実行プロセス名で書き換わらない＝検出/表示安定）。
+func (m *Manager) NewWindow(name, command string) string {
+	id := out("new-window", "-t", m.Session, "-n", name, "-P",
+		"-F", "#{window_id}", command)
+	if id != "" {
+		out("set-option", "-w", "-t", m.Session+":"+id,
+			"automatic-rename", "off")
+	}
+	return id
+}
+
+// KillWindowID は window_id 指定で窓を閉じる。
+func (m *Manager) KillWindowID(id string) {
+	if id != "" {
+		out("kill-window", "-t", m.Session+":"+id)
+	}
+}
+
+// StyleWindowID は window_id 指定でステータス色を設定する。
+func (m *Manager) StyleWindowID(id, style string) {
+	if id == "" {
+		return
+	}
+	t := m.Session + ":" + id
+	out("set-option", "-w", "-t", t, "window-status-style", style)
+	out("set-option", "-w", "-t", t, "window-status-current-style",
+		style+",reverse")
+}
+
 // SetWindowStyle は key に対応する window のステータス色を設定する
 // （リモート PC 窓を視覚的に区別。tmux の window-status-style /
 // -current-style を per-window で上書き）。例 style="fg=colour213"。

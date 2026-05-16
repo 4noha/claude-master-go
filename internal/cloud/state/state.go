@@ -175,6 +175,26 @@ func (c *Client) DeletePC(ctx context.Context) error {
 	return err
 }
 
+// WatchSessions は全 PC の sessions コレクショングループを real-time
+// 監視し、変更（追加/更新/削除）のたび cb を呼ぶ（5s ポーリング廃止＝
+// push 駆動）。初回スナップショットでも 1 回 cb（初期同期）。ctx 終了で
+// クリーンに戻る。連続変更はバースト的に来るので呼び出し側で冪等な
+// reconcile を行うこと。
+func (c *Client) WatchSessions(ctx context.Context, cb func()) error {
+	it := c.fs.CollectionGroup("sessions").Snapshots(ctx)
+	defer it.Stop()
+	for {
+		_, err := it.Next()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		cb()
+	}
+}
+
 // ListPCs は pcs/* の PC（端末）id 一覧（アカウント全体 scope 用）。
 func (c *Client) ListPCs(ctx context.Context) ([]string, error) {
 	docs, err := c.fs.Collection("pcs").Documents(ctx).GetAll()

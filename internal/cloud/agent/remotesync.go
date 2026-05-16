@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"hash/fnv"
+	"strings"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/cloud/state"
@@ -15,14 +16,12 @@ var remotePalette = []string{
 	"colour45", "colour220", "colour171", "colour120",
 }
 
-// colorFor は pc 名から決定的に色を選ぶ（同 PC は常に同色）。
 func colorFor(pc string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(pc))
 	return remotePalette[int(h.Sum32())%len(remotePalette)]
 }
 
-// shortName はラベルを短く（先頭 ↗＝リモート印＋dir を rune 12 まで）。
 func shortName(dir string) string {
 	r := []rune(dir)
 	if len(r) > 12 {
@@ -31,12 +30,16 @@ func shortName(dir string) string {
 	return "↗" + string(r)
 }
 
-// RemoteSession は他 PC のセッション 1 つ（tmux 窓化の単位）。
-type RemoteSession struct{ PC, SID, Dir string }
-
-// WindowCmd は (pc,sid,dir) からその窓で動かすコマンドを作る
-// （通常は cloud attach の再接続ループ）。
+// WindowCmd は (pc,sid,dir) からその窓で動かすコマンドを作る。
+// 生成コマンドには必ず attachMarker(pc,sid) を含めること（stateless
+// 在席判定のキー）。
 type WindowCmd func(pc, sid, dir string) string
+
+// attachMarker は窓を (pc,sid) で一意特定する pane_start_command 内の
+// 安定部分文字列。auto-rename・agent 再起動に影響されない真の在席キー。
+func attachMarker(pc, sid string) string {
+	return "cloud attach " + sid + " --pc " + pc
+}
 
 func sessSID(s map[string]any) string {
 	if v, _ := s["key"].(string); v != "" {
@@ -48,17 +51,20 @@ func sessSID(s map[string]any) string {
 	return ""
 }
 
-// SyncRemoteOnce は 1 周分: 自分以外の PC の全セッションに対応する
-// tmux 窓を確保し、消えたものを閉じる。known（key→在席）を更新して返す。
-// key は "R:<pc>/<sid>"（ローカル監視の key と名前空間衝突しない）。
-func SyncRemoteOnce(ctx context.Context, st *state.Client, mgr *tmux.Manager,
-	selfPC string, wc WindowCmd, known map[string]bool) map[string]bool {
+// ReconcileRemote は **stateless** に「他 PC の全セッション」と
+// 「tmux 上の既存リモート窓（pane_start_command で判定）」を突き合わせ、
+// 不足を作成・余剰/重複/消失を kill する。in-process 状態に依存しない
+// ため agent 再起動や tmux auto-rename でも重複生成しない（runaway 修正）。
+func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
+	selfPC string, wc WindowCmd) {
 
-	cur := map[string]bool{}
+	// desired: marker -> (pc,sid,dir)
+	type meta struct{ pc, sid, dir string }
+	desired := map[string]meta{}
 	pcs, _ := st.ListPCs(ctx)
 	for _, pc := range pcs {
 		if pc == selfPC || pc == "" {
-			continue // 自 PC は監視デーモンがローカルで窓化済
+			continue // 自 PC はローカル監視デーモンの担当
 		}
 		ss, _ := st.ListSessions(ctx, pc)
 		for _, s := range ss {
@@ -70,35 +76,83 @@ func SyncRemoteOnce(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 			if dir == "" {
 				dir = sid
 			}
-			key := "R:" + pc + "/" + sid
-			cur[key] = true
-			mgr.EnsureCmdWindow(key, shortName(dir), wc(pc, sid, dir))
-			// PC ごとの識別色（リモート窓を一目で区別）
-			mgr.SetWindowStyle(key, "fg="+colorFor(pc))
+			desired[attachMarker(pc, sid)] = meta{pc, sid, dir}
 		}
 	}
-	for k := range known {
-		if !cur[k] {
-			mgr.RemoveWindow(k) // リモートで消えたセッションの窓を閉じる
+
+	// current: tmux 上のリモート窓（window_id -> start command）
+	cur := mgr.MarkedWindows("claude-master cloud attach ")
+
+	// desired ごとに、対応する現存窓を集計（0=作成、1=維持、2+=重複→余剰kill）
+	for marker, d := range desired {
+		var ids []string
+		for id, cmd := range cur {
+			if strings.Contains(cmd, marker) {
+				ids = append(ids, id)
+				delete(cur, id) // desired 済みは cur から外す
+			}
+		}
+		switch {
+		case len(ids) == 0:
+			id := mgr.NewWindow(shortName(d.dir), wc(d.pc, d.sid, d.dir))
+			mgr.StyleWindowID(id, "fg="+colorFor(d.pc))
+		default:
+			mgr.StyleWindowID(ids[0], "fg="+colorFor(d.pc)) // 1 本維持
+			for _, extra := range ids[1:] {
+				mgr.KillWindowID(extra) // 重複（過去 runaway）を自己修復
+			}
 		}
 	}
-	return cur
+	// desired に無い残りはリモートで消えたセッション → kill
+	// （cur は window_id→cmd。キー＝window_id で kill すること）
+	for id := range cur {
+		mgr.KillWindowID(id)
+	}
 }
 
 // RunRemoteTmuxSync は他 PC の claude セッションを this PC の tmux へ
-// interval ごとに同期し続ける（cloud agent から起動）。ctx 終了で戻る。
+// 同期し続ける。**push 駆動**: 起動時に 1 回 reconcile し、その後は
+// Firestore の sessions 変更通知（WatchSessions）が来るたびに reconcile
+// （5s ポーリング廃止）。バースト変更は最小デバウンスで coalesce。
+// ctx 終了で戻る。WatchSessions がエラー終了したら再購読する。
 func RunRemoteTmuxSync(ctx context.Context, st *state.Client, mgr *tmux.Manager,
-	selfPC string, wc WindowCmd, interval time.Duration) {
-	if interval <= 0 {
-		interval = 5 * time.Second
+	selfPC string, wc WindowCmd) {
+
+	trigger := make(chan struct{}, 1)
+	kick := func() {
+		select {
+		case trigger <- struct{}{}:
+		default: // 既に保留中（coalesce）
+		}
 	}
-	known := map[string]bool{}
+	kick() // 初期同期
+
+	// reconcile 実行ループ（最小デバウンス 1s でバーストを集約）
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-trigger:
+				ReconcileRemote(ctx, st, mgr, selfPC, wc)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+		}
+	}()
+
+	// Firestore push 購読（落ちたら短間隔で再購読。ポーリングではない）
 	for {
-		known = SyncRemoteOnce(ctx, st, mgr, selfPC, wc, known)
+		if err := st.WatchSessions(ctx, kick); err == nil || ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-time.After(3 * time.Second):
 		}
 	}
 }
