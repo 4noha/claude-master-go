@@ -10,14 +10,22 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
 	"github.com/4noha/claude-master-go/internal/client"
+	"github.com/4noha/claude-master-go/internal/cloud/agent"
+	"github.com/4noha/claude-master-go/internal/cloud/relay"
+	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/config"
 	"github.com/4noha/claude-master-go/internal/monitor"
 	"github.com/4noha/claude-master-go/internal/ptyproxy"
@@ -44,6 +52,8 @@ func main() {
 		runSocketClient(os.Args[2:])
 	case "monitor":
 		runMonitor(os.Args[2:])
+	case "cloud":
+		runCloud(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -195,7 +205,150 @@ func runSocketClient(args []string) {
 	}
 }
 
+// sigCtx は SIGTERM/SIGINT で cancel される context。
+func sigCtx() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	go func() { <-ch; cancel() }()
+	return ctx, cancel
+}
+
+// statusSessions は STATUS_FILE の sessions[] を返す（monitor 書出）。
+func statusSessions(cfg *config.Config) []map[string]any {
+	b, err := os.ReadFile(cfg.StatusFile)
+	if err != nil {
+		return nil
+	}
+	var p struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if json.Unmarshal(b, &p) != nil {
+		return nil
+	}
+	return p.Sessions
+}
+
+// resolveSock は sid（session key）→ ローカル <pid>.sock。STATUS_FILE
+// の sessions[] から key 一致の pid を引き、sock が在れば返す。
+func resolveSock(cfg *config.Config) func(string) (string, bool) {
+	return func(sid string) (string, bool) {
+		for _, s := range statusSessions(cfg) {
+			if k, _ := s["key"].(string); k != sid {
+				continue
+			}
+			pidf, _ := s["pid"].(float64)
+			sock := filepath.Join(cfg.SessionsDir,
+				strconv.Itoa(int(pidf))+".sock")
+			if _, err := os.Stat(sock); err == nil {
+				return sock, true
+			}
+			return "", false
+		}
+		return "", false
+	}
+}
+
+// runCloud: claude-master cloud {agent|attach <sid> [--pc <PC>]}
+func runCloud(args []string) {
+	cfg := config.Load()
+	if cfg.GCPProject == "" {
+		fmt.Fprintln(os.Stderr,
+			"cloud 無効: GCP_PROJECT 未設定（DESIGN_M6.md 参照）")
+		os.Exit(2)
+	}
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "agent":
+		runCloudAgent(cfg)
+	case "attach":
+		runCloudAttach(cfg, args[1:])
+	default:
+		fmt.Fprintln(os.Stderr,
+			"usage: claude-master cloud {agent|attach <sid> [--pc <PC>]}")
+		os.Exit(2)
+	}
+}
+
+func runCloudAgent(cfg *config.Config) {
+	ctx, cancel := sigCtx()
+	defer cancel()
+	st, err := state.New(ctx, cfg.GCPProject, cfg.PCID)
+	if err != nil {
+		exitErr(err)
+	}
+	defer st.Close()
+	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			if ss := statusSessions(cfg); len(ss) > 0 {
+				_, _ = st.PushStatus(ctx, ss)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	ag := &agent.Agent{
+		St: st, RelayURL: cfg.CloudRelayURL,
+		ResolveSock: resolveSock(cfg), IdleClose: 30 * time.Second,
+	}
+	fmt.Printf("cloud agent: pc=%s project=%s relay=%s\n",
+		cfg.PCID, cfg.GCPProject, cfg.CloudRelayURL)
+	if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
+		exitErr(err)
+	}
+}
+
+func runCloudAttach(cfg *config.Config, args []string) {
+	var sid, targetPC string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--pc" && i+1 < len(args) {
+			targetPC = args[i+1]
+			i++
+		} else if sid == "" {
+			sid = args[i]
+		}
+	}
+	if sid == "" {
+		fmt.Fprintln(os.Stderr, "usage: claude-master cloud attach <sid> [--pc <PC>]")
+		os.Exit(2)
+	}
+	if targetPC == "" {
+		targetPC = cfg.PCID
+	}
+	if cfg.CloudRelayURL == "" {
+		exitErr(fmt.Errorf("CLOUD_RELAY_URL 未設定（deploy 後に設定）"))
+	}
+	ctx, cancel := sigCtx()
+	defer cancel()
+	st, err := state.New(ctx, cfg.GCPProject, cfg.PCID)
+	if err != nil {
+		exitErr(err)
+	}
+	defer st.Close()
+	if err := st.Wake(ctx, targetPC, sid); err != nil { // 相手 PC を起こす
+		exitErr(fmt.Errorf("wake 失敗: %w", err))
+	}
+	conn, err := relay.Dial(ctx, cfg.CloudRelayURL, sid, "viewer")
+	if err != nil {
+		exitErr(fmt.Errorf("relay 接続失敗: %w", err))
+	}
+	defer conn.Close()
+	// 実証済 socket_client 本体を WSS conn でそのまま再利用
+	if err := client.RunConn(conn, cfg); err != nil {
+		exitErr(err)
+	}
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master {config|update|version|proxy|socket-client|monitor}")
+		"usage: claude-master {config|update|version|proxy|socket-client|monitor|cloud}")
 }

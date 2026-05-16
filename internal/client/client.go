@@ -134,7 +134,14 @@ func Run(sockPath string, retry bool, cfg *config.Config) error {
 		return err
 	}
 	defer conn.Close()
+	return RunConn(conn, cfg)
+}
 
+// RunConn は確立済み conn（unix socket / WSS relay 等）に対して
+// socket_client と同一の双方向中継を行う。`cloud attach`（viewer が
+// WSS relay 越しに繋ぐ）でも実証済の nav/pagekey/wheel/SCROLL_MAGIC/
+// RESIZE をそのまま再利用するための共通本体。
+func RunConn(conn net.Conn, cfg *config.Config) error {
 	fd := int(os.Stdin.Fd())
 	old, err := term.MakeRaw(fd)
 	if err != nil {

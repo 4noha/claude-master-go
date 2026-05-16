@@ -41,11 +41,23 @@ type Config struct {
 	RealClaude  string // 本物の claude バイナリ（proxy がラップする対象）
 	SessionsDir string // <pid>.sock / <pid>.status.json の置き場
 	PendingFile string // 再開スケジュール永続化（monitor 再起動跨ぎ）
+	// M6 クラウド同期（未設定なら cloud 機能はオプトイン無効）
+	GCPProject    string // Firestore プロジェクト ID
+	PCID          string // この PC の識別子（既定 hostname）
+	CloudRelayURL string // Cloud Run relay の wss:// URL
 }
 
 func home(p string) string {
 	h, _ := os.UserHomeDir()
 	return filepath.Join(h, p)
+}
+
+// hostnameOr は os.Hostname()（取得不可なら def）。PC_ID 既定値用。
+func hostnameOr(def string) string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return def
 }
 
 // Load は env > file > default で Config を構築する。ファイル不在/不正は
@@ -118,6 +130,10 @@ func Load() *Config {
 		RealClaude:  str("REAL_CLAUDE", home(".local/bin/claude")),
 		SessionsDir: home(".claude-master/sessions"),
 		PendingFile: home(".claude-master/pending_resumes.json"),
+
+		GCPProject:    str("GCP_PROJECT", ""),
+		PCID:          str("PC_ID", hostnameOr("pc")),
+		CloudRelayURL: str("CLOUD_RELAY_URL", ""),
 	}
 }
 
