@@ -232,7 +232,77 @@ func TestDashboardRendersRealStatusFile(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Dashboard が done で終了しない")
 	}
-	if !strings.Contains(out.String(), "claude-master") {
-		t.Fatalf("Dashboard が STATUS_FILE を描画していない: %q", out.String())
+	o := out.String()
+	if !strings.Contains(o, "Claude Code Sessions") ||
+		!strings.Contains(o, "更新:") || !strings.Contains(o, "セッション数:") {
+		t.Fatalf("Dashboard が STATUS_FILE を整形描画していない: %q", o)
+	}
+}
+
+// RenderDashboard を「M5e-1/_write_status が実際に書く JSON 実スキーマ」
+// で検証（box 幅・ヘッダ・行・limit サブ行・footer の忠実）。合成
+// green でなく実 scan→WriteStatus→load した実データでも描画確認。
+func TestRenderDashboardRealSchema(t *testing.T) {
+	// 実スキーマ（json 復号で数値は float64）
+	data := map[string]any{
+		"updated_at": "2026-05-16 21:00:00",
+		"sessions": []any{
+			map[string]any{
+				"pid": float64(4242), "short_dir": "claude-master-go",
+				"start_time": "05-16 20:00", "cpu_percent": float64(3.2),
+				"mem_mb": float64(128.4), "usage_percent": float64(91),
+				"reset_time": "8:30 pm", "reset_tz": "UTC+9",
+				"session_id": "deadbeef-1111-2222-3333-444455556666",
+				"window_name": "claude-master-go",
+			},
+		},
+	}
+	out := RenderDashboard(data, 100, "最新")
+	lines := strings.Split(out, "\n")
+	for _, ln := range lines { // 全行が幅 W=100（rune 数）で枠が揃う
+		if rcount(ln) != 100 {
+			t.Fatalf("枠幅が W に揃っていない(%d): %q", rcount(ln), ln)
+		}
+	}
+	must := []string{
+		" Claude Code Sessions ", "PID", "Dir", "CPU%", "Mem MB",
+		"Use%", "Resets", "4242", "claude-master-go", "91%",
+		"Limit: 91%", "Resets: 8:30 pm", "(UTC+9)", "[deadbeef]",
+		"更新: 2026-05-16 21:00:00", "セッション数: 1", "ツール: 最新",
+	}
+	for _, m := range must {
+		if !strings.Contains(out, m) {
+			t.Fatalf("dashboard に %q が無い:\n%s", m, out)
+		}
+	}
+	// セッション無し
+	empty := RenderDashboard(map[string]any{"updated_at": "x"}, 80, "")
+	if !strings.Contains(empty, "(CLI セッションなし)") ||
+		!strings.Contains(empty, "セッション数: 0") {
+		t.Fatalf("空セッション描画が不正:\n%s", empty)
+	}
+
+	// 実 scan→WriteStatus→load→render が破綻しない（実データ）
+	cfg := testCfg(t)
+	mgr, done := testMgr(t, cfg)
+	defer done()
+	ss, _ := scanner.Scan(false)
+	if err := WriteStatus(cfg, mgr, ss); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg.StatusFile)
+	var d map[string]any
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatalf("実 status JSON 復号失敗: %v", err)
+	}
+	r := RenderDashboard(d, 90, "")
+	if !strings.Contains(r, "Claude Code Sessions") ||
+		!strings.Contains(r, "セッション数:") {
+		t.Fatalf("実 scan 由来データで描画破綻:\n%s", r)
+	}
+	for _, ln := range strings.Split(r, "\n") {
+		if rcount(ln) != 90 {
+			t.Fatalf("実データで枠幅不揃い(%d): %q", rcount(ln), ln)
+		}
 	}
 }

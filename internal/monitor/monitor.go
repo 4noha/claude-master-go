@@ -340,40 +340,150 @@ func CmdStatus(cfg *config.Config, stdout io.Writer) error {
 	return nil
 }
 
-// Dashboard は STATUS_FILE を一定間隔で表組み表示（Python dashboard.py
-// の最小等価。done で終了）。
+const dashMinW = 78
+
+// rcount は Python len(str)（rune 数）。Python の str.format 幅は文字数
+// 基準なので忠実移植のため表示幅でなく rune 数で揃える。
+func rcount(s string) int { return len([]rune(s)) }
+
+func ljust(s string, n int) string {
+	if d := n - rcount(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return s
+}
+func rjust(s string, n int) string {
+	if d := n - rcount(s); d > 0 {
+		return strings.Repeat(" ", d) + s
+	}
+	return s
+}
+func center(s string, n int) string {
+	d := n - rcount(s)
+	if d <= 0 {
+		return s
+	}
+	l := d / 2
+	return strings.Repeat(" ", l) + s + strings.Repeat(" ", d-l)
+}
+func runeCut(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
+func jstr(m map[string]any, k string) string {
+	if v, ok := m[k].(string); ok {
+		return v
+	}
+	return ""
+}
+func jflt(m map[string]any, k string) float64 {
+	switch n := m[k].(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	}
+	return 0
+}
+
+// RenderDashboard は Python dashboard.render の忠実移植（純関数）。
+// data は STATUS_FILE の JSON 復号 map（pid 等は float64）。gitMsg は
+// 任意のツール更新文（空可）。
+func RenderDashboard(data map[string]any, w int, gitMsg string) string {
+	W := w
+	if W < dashMinW {
+		W = dashMinW
+	}
+	sessions, _ := data["sessions"].([]any)
+	updated := "—"
+	if u := jstr(data, "updated_at"); u != "" {
+		updated = u
+	}
+	const resetW, overhead = 10, 56
+	dirW := W - overhead
+	if dirW < 16 {
+		dirW = 16
+	}
+	hdr := "║ " + ljust("PID", 6) + " " + ljust("Dir", dirW) + " " +
+		ljust("Started", 13) + " " + rjust("CPU%", 5) + " " +
+		rjust("Mem MB", 7) + " " + rjust("Use%", 5) + " " +
+		rjust("Resets", resetW) + " ║"
+	lines := []string{
+		"╔" + strings.Repeat("═", W-2) + "╗",
+		"║" + center(" Claude Code Sessions ", W-2) + "║",
+		"╠" + strings.Repeat("═", W-2) + "╣",
+		hdr,
+		"╠" + strings.Repeat("─", W-2) + "╣",
+	}
+	if len(sessions) == 0 {
+		lines = append(lines, "║"+ljust("  (CLI セッションなし)", W-2)+"║")
+	} else {
+		for _, sv := range sessions {
+			s, _ := sv.(map[string]any)
+			usageStr := "—"
+			if v, ok := s["usage_percent"]; ok && v != nil {
+				usageStr = fmt.Sprintf("%d%%", int(jflt(s, "usage_percent")))
+			}
+			resetStr := "—"
+			if r := jstr(s, "reset_time"); r != "" {
+				resetStr = r
+			}
+			row := "║ " + ljust(fmt.Sprintf("%d", int(jflt(s, "pid"))), 6) + " " +
+				ljust(runeCut(jstr(s, "short_dir"), dirW), dirW) + " " +
+				ljust(jstr(s, "start_time"), 13) + " " +
+				rjust(fmt.Sprintf("%4.1f%%", jflt(s, "cpu_percent")), 5) + " " +
+				rjust(fmt.Sprintf("%7.1f", jflt(s, "mem_mb")), 7) + " " +
+				rjust(usageStr, 5) + " " + rjust(resetStr, resetW) + " ║"
+			lines = append(lines, row)
+			sid := ""
+			if id := jstr(s, "session_id"); id != "" {
+				sid = "[" + runeCut(id, 8) + "]"
+			}
+			parts := []string{"Limit: " + usageStr, "Resets: " + resetStr}
+			if tz := jstr(s, "reset_tz"); tz != "" {
+				parts = append(parts, "("+tz+")")
+			}
+			var sb []string
+			if sid != "" {
+				sb = append(sb, sid)
+			}
+			sb = append(sb, parts...)
+			sub := strings.TrimSpace(strings.Join(sb, "  "))
+			lines = append(lines, "║  "+ljust(sub, W-4)+"║")
+		}
+	}
+	footer := fmt.Sprintf("更新: %s  セッション数: %d", updated, len(sessions))
+	if gitMsg != "" {
+		footer += "  ツール: " + gitMsg
+	}
+	lines = append(lines,
+		"╠"+strings.Repeat("─", W-2)+"╣",
+		"║ "+ljust(footer, W-3)+"║",
+		"╚"+strings.Repeat("═", W-2)+"╝")
+	return strings.Join(lines, "\n")
+}
+
+// Dashboard は STATUS_FILE を 3 秒ごとに整形表示（Python dashboard.py
+// --loop。done で終了）。
 func Dashboard(cfg *config.Config, done <-chan struct{}, stdout io.Writer) {
 	for {
-		b, err := os.ReadFile(cfg.StatusFile)
-		fmt.Fprint(stdout, "\x1b[2J\x1b[H") // クリア
-		if err == nil {
-			var p struct {
-				UpdatedAt string `json:"updated_at"`
-				Sessions  []struct {
-					Pid        int     `json:"pid"`
-					ShortDir   string  `json:"short_dir"`
-					StartTime  string  `json:"start_time"`
-					CPUPercent float64 `json:"cpu_percent"`
-					WindowName string  `json:"window_name"`
-				} `json:"sessions"`
-			}
-			if json.Unmarshal(b, &p) == nil {
-				fmt.Fprintf(stdout, "claude-master  更新: %s\n\n", p.UpdatedAt)
-				fmt.Fprintf(stdout, "%-8s %-20s %-14s %6s  %s\n",
-					"PID", "Dir", "Started", "CPU%", "Window")
-				fmt.Fprintln(stdout, strings.Repeat("-", 70))
-				for _, s := range p.Sessions {
-					fmt.Fprintf(stdout, "%-8d %-20s %-14s %6.1f  %s\n",
-						s.Pid, s.ShortDir, s.StartTime, s.CPUPercent, s.WindowName)
-				}
-			}
-		} else {
-			fmt.Fprintln(stdout, "（status 待機中…）")
+		var data map[string]any
+		if b, err := os.ReadFile(cfg.StatusFile); err == nil {
+			_ = json.Unmarshal(b, &data)
 		}
+		if data == nil {
+			data = map[string]any{}
+		}
+		fmt.Fprint(stdout, "\x1b[2J\x1b[H")
+		fmt.Fprintln(stdout, RenderDashboard(data, dashMinW, ""))
 		select {
 		case <-done:
 			return
-		case <-time.After(2 * time.Second):
+		case <-time.After(3 * time.Second):
 		}
 	}
 }
