@@ -1,0 +1,21 @@
+rules_version = '2';
+
+// claude-master クラウド同期 Firestore セキュリティルール（v1）。
+// 認証必須。PC は自分の pcs/{pc} subtree と wake/{pc} を読み書き。
+// viewer は attach 対象 PC の wake/{pc} に書ければよい（直接 wake 方式
+// ＝Cloud Functions 無し設計。下記の通り認証ユーザのみに限定）。
+// 将来: request.auth.token 内の pcId クレームで自分の PC のみに厳格化。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // セッション状態（source PC が PushStatus で upsert）
+    match /pcs/{pc}/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    // wake 制御ドキュメント（viewer/Functions が書き、対象 PC が listen）
+    match /wake/{pc} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
