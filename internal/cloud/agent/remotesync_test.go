@@ -25,7 +25,7 @@ func testWC(pc, sid, dir string) string {
 }
 
 func remoteWinCount(mgr *tmux.Manager) int {
-	mw, _ := mgr.MarkedWindows("claude-master cloud attach ")
+	mw, _ := mgr.MarkedWindows()
 	return len(mw)
 }
 
@@ -91,7 +91,7 @@ func TestReconcileRemoteStatelessNoDuplicate(t *testing.T) {
 	}
 
 	// 既存 runaway 窓の自己修復: 同 marker の重複窓を手で作る → reconcile で 1 本に
-	mgr.NewWindow("dup", testWC("remoteA", "rs1", "projA"))
+	mgr.NewMarkedWindow("dup", testWC("remoteA", "rs1", "projA"), attachMarker("remoteA", "rs1"))
 	if remoteWinCount(mgr) != 3 {
 		t.Fatalf("重複窓を作れていない: %d", remoteWinCount(mgr))
 	}
@@ -101,7 +101,7 @@ func TestReconcileRemoteStatelessNoDuplicate(t *testing.T) {
 	}
 
 	// PC 別識別色が実 tmux per-window option に入っている
-	mwc, _ := mgr.MarkedWindows("claude-master cloud attach ")
+	mwc, _ := mgr.MarkedWindows()
 	for id := range mwc {
 		so, _ := exec.Command("tmux", "show-options", "-w", "-t",
 			tsession+":"+id, "window-status-style").CombinedOutput()
@@ -173,7 +173,7 @@ func TestReconcileAbortsOnTmuxListError(t *testing.T) {
 		t.Skip(err)
 	}
 	defer exec.Command("tmux", "kill-session", "-t", miss).Run()
-	if _, e := mgr.MarkedWindows("x"); e == nil {
+	if _, e := mgr.MarkedWindows(); e == nil {
 		t.Fatal("不在セッションの MarkedWindows がエラーを返さない")
 	}
 	// fail-safe: 作成されない（セッションも作られない）

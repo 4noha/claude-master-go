@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/cloud/state"
@@ -66,11 +65,11 @@ func sessSID(s map[string]any) string {
 func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 	selfPC string, wc WindowCmd) {
 
-	// current: tmux 上のリモート窓（window_id -> start command）
+	// current: @cm_remote 付きリモート窓（window_id -> marker）。
 	// ★ list 失敗を「窓ゼロ」と誤認すると毎周全作成＝runaway。
 	// 取得できない周は **何もせず中止**（fail-safe。idempotent なので
 	// 次の trigger で再試行）。
-	cur, cerr := mgr.MarkedWindows("claude-master cloud attach ")
+	cur, cerr := mgr.MarkedWindows()
 	if cerr != nil {
 		dbg("ABORT: tmux list 失敗（作成しない）: %v", cerr)
 		return
@@ -117,13 +116,14 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 		dbg("CAP: cur=%d > %d → 作成停止し余剰整理のみ", len(cur), maxWin)
 	}
 
-	// desired ごとに、対応する現存窓を集計（0=作成、1=維持、2+=重複→余剰kill）
+	// desired ごとに対応窓を集計（0=作成 / 1=維持 / 2+=重複→余剰kill）。
+	// @cm_remote は marker そのものなので厳密一致で判定。
 	for marker, d := range desired {
 		var ids []string
-		for id, cmd := range cur {
-			if strings.Contains(cmd, marker) {
+		for id, mk := range cur {
+			if mk == marker {
 				ids = append(ids, id)
-				delete(cur, id) // desired 済みは cur から外す
+				delete(cur, id)
 			}
 		}
 		switch {
@@ -132,7 +132,8 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 				dbg("SKIP create（CAP）%s/%s", d.pc, d.sid)
 				continue
 			}
-			id := mgr.NewWindow(shortName(d.dir), wc(d.pc, d.sid, d.dir))
+			id := mgr.NewMarkedWindow(shortName(d.dir),
+				wc(d.pc, d.sid, d.dir), marker)
 			mgr.StyleWindowID(id, "fg="+colorFor(d.pc))
 			dbg("CREATE %s/%s -> %s", d.pc, d.sid, id)
 		default:
@@ -143,10 +144,18 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 			dbg("KEEP %s/%s ids=%v", d.pc, d.sid, ids)
 		}
 	}
-	// desired に無い残りはリモートで消えたセッション → kill
-	// （cur は window_id→cmd。キー＝window_id で kill すること）
+	// desired に無い @cm_remote 窓 = リモートで消えたセッション → kill
 	for id := range cur {
 		mgr.KillWindowID(id)
+	}
+	// 旧方式（@cm_remote 無し）の runaway 残骸を一掃（list 失敗は無視）。
+	if legacy, lerr := mgr.LegacyAttachWindows(); lerr == nil {
+		for _, id := range legacy {
+			mgr.KillWindowID(id)
+		}
+		if len(legacy) > 0 {
+			dbg("LEGACY purge %d 窓", len(legacy))
+		}
 	}
 }
 

@@ -127,19 +127,22 @@ func (m *Manager) EnsureCmdWindow(key, base, command string) string {
 	return name
 }
 
-// MarkedWindows は pane_start_command に needle を含む窓を
-// **window_id → start_command** で返す（リモート同期の stateless 在席
-// 判定。window_id 一意キーなので同一コマンドの重複窓も別個に列挙でき、
-// runaway で増えた重複窓を検出・自己修復できる。in-process マップに
-// 依存せず agent 再起動/auto-rename に強い）。
-func (m *Manager) MarkedWindows(needle string) (map[string]string, error) {
+// remoteOpt は窓に付ける一意識別ユーザーオプション。pane_start_command は
+// launchd 環境やプロセス遷移で空になり得る脆弱キーで runaway の真因
+// だった。自分で必ず set する @cm_remote なら環境非依存・確実。
+const remoteOpt = "@cm_remote"
+
+// MarkedWindows は @cm_remote が設定された窓を **window_id → marker** で
+// 返す（リモート同期の確実な stateless 在席判定）。window_id 一意キーで
+// 重複窓も別個に列挙＝runaway 重複の自己修復が可能。list 失敗は error を
+// 返し「窓ゼロ」と誤認させない（runaway 防止の核心）。
+func (m *Manager) MarkedWindows() (map[string]string, error) {
 	o, err := outErr("list-windows", "-t", m.Session, "-F",
-		"#{window_id}\t#{pane_start_command}")
-	res := map[string]string{}
+		"#{window_id}\t#{"+remoteOpt+"}")
 	if err != nil {
-		// list 失敗を「窓ゼロ」と誤認させない（runaway 防止の核心）
 		return nil, err
 	}
+	res := map[string]string{}
 	if o == "" {
 		return res, nil
 	}
@@ -148,24 +151,52 @@ func (m *Manager) MarkedWindows(needle string) (map[string]string, error) {
 		if i < 0 {
 			continue
 		}
-		id, cmd := ln[:i], ln[i+1:]
-		if strings.Contains(cmd, needle) {
-			res[id] = cmd // window_id をキー（重複窓も別エントリ）
+		id, mark := ln[:i], ln[i+1:]
+		if mark != "" {
+			res[id] = mark
 		}
 	}
 	return res, nil
 }
 
-// NewWindow は窓を作って window_id(@N) を返す。auto-rename を切り
-// （ラベルが実行プロセス名で書き換わらない＝検出/表示安定）。
-func (m *Manager) NewWindow(name, command string) string {
+// LegacyAttachWindows は @cm_remote 未設定だが pane_start_command に
+// "claude-master cloud attach" を含む旧 runaway 窓の id を返す
+// （新方式移行後の一掃用。list 失敗は error）。
+func (m *Manager) LegacyAttachWindows() ([]string, error) {
+	o, err := outErr("list-windows", "-t", m.Session, "-F",
+		"#{window_id}\t#{"+remoteOpt+"}\t#{pane_start_command}")
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, ln := range strings.Split(o, "\n") {
+		p := strings.SplitN(ln, "\t", 3)
+		if len(p) < 3 {
+			continue
+		}
+		if p[1] == "" && strings.Contains(p[2], "claude-master cloud attach") {
+			ids = append(ids, p[0])
+		}
+	}
+	return ids, nil
+}
+
+// NewMarkedWindow は窓を作り @cm_remote=marker を付けて window_id を
+// 返す（auto-rename off。marker が確実な在席キーになる）。
+func (m *Manager) NewMarkedWindow(name, command, marker string) string {
 	id := out("new-window", "-t", m.Session, "-n", name, "-P",
 		"-F", "#{window_id}", command)
 	if id != "" {
-		out("set-option", "-w", "-t", m.Session+":"+id,
-			"automatic-rename", "off")
+		t := m.Session + ":" + id
+		out("set-option", "-w", "-t", t, remoteOpt, marker)
+		out("set-option", "-w", "-t", t, "automatic-rename", "off")
 	}
 	return id
+}
+
+// NewWindow は @cm_remote 無しの素の窓（テスト/汎用）。
+func (m *Manager) NewWindow(name, command string) string {
+	return m.NewMarkedWindow(name, command, "")
 }
 
 // KillWindowID は window_id 指定で窓を閉じる。
