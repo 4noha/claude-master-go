@@ -106,6 +106,15 @@ func (c *Client) PushStatus(ctx context.Context, sessions []map[string]any) (cha
 			return changed, werr
 		}
 	}
+	// pcs/{pc} は subcollection 書込では暗黙の非存在 doc になり
+	// Collection("pcs") 列挙に出ない。端末一覧（account scope）で
+	// 拾えるよう、変化があった時だけ親 doc を明示書込（near-$0 維持）。
+	if changed > 0 {
+		_, _ = c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, map[string]any{
+			"id":         c.pcID,
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+	}
 	return changed, nil
 }
 
@@ -138,6 +147,19 @@ func (c *Client) ConsumePairing(ctx context.Context, codeHash string) (pc, scope
 	p, _ := d["pc"].(string)
 	sc, _ := d["scope"].(string)
 	return p, sc, true, nil
+}
+
+// ListPCs は pcs/* の PC（端末）id 一覧（アカウント全体 scope 用）。
+func (c *Client) ListPCs(ctx context.Context) ([]string, error) {
+	docs, err := c.fs.Collection("pcs").Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.Ref.ID)
+	}
+	return out, nil
 }
 
 // ListSessions は pcs/{pc}/sessions/* を返す（Web /api 用。画面解釈は

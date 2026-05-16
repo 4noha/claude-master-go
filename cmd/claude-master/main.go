@@ -17,7 +17,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -27,7 +26,6 @@ import (
 	"github.com/4noha/claude-master-go/internal/cloud/agent"
 	"github.com/4noha/claude-master-go/internal/cloud/relay"
 	"github.com/4noha/claude-master-go/internal/cloud/state"
-	"github.com/4noha/claude-master-go/internal/cloud/webauth"
 	"github.com/4noha/claude-master-go/internal/config"
 	"github.com/4noha/claude-master-go/internal/monitor"
 	"github.com/4noha/claude-master-go/internal/ptyproxy"
@@ -268,11 +266,9 @@ func runCloud(args []string) {
 		runCloudAgent(cfg)
 	case "attach":
 		runCloudAttach(cfg, args[1:])
-	case "pair":
-		runCloudPair(cfg)
 	default:
 		fmt.Fprintln(os.Stderr,
-			"usage: claude-master cloud {agent|attach <sid> [--pc <PC>]|pair}")
+			"usage: claude-master cloud {agent|attach <sid> [--pc <PC>]}")
 		os.Exit(2)
 	}
 }
@@ -309,33 +305,6 @@ func runCloudAgent(cfg *config.Config) {
 	if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
 		exitErr(err)
 	}
-}
-
-// runCloudPair: pairing code を発行して Firestore へ（Web コード認証）。
-func runCloudPair(cfg *config.Config) {
-	ctx, cancel := sigCtx()
-	defer cancel()
-	st, err := state.New(ctx, cfg.GCPProject, cfg.PCID)
-	if err != nil {
-		exitErr(err)
-	}
-	defer st.Close()
-	code, err := webauth.GenCode()
-	if err != nil {
-		exitErr(err)
-	}
-	const ttl = 10 * time.Minute
-	if err := st.CreatePairing(ctx, webauth.HashCode(code),
-		cfg.PCID, cfg.PCID, ttl); err != nil {
-		exitErr(fmt.Errorf("pairing 登録失敗: %w", err))
-	}
-	webURL := "(CLOUD_RELAY_URL 未設定)"
-	if cfg.CloudRelayURL != "" {
-		webURL = strings.Replace(cfg.CloudRelayURL, "wss://", "https://", 1) + "/login"
-	}
-	fmt.Printf("pairing code: %s\n", code)
-	fmt.Printf("  PC=%s  有効期限=%s  Web=%s\n", cfg.PCID, ttl, webURL)
-	fmt.Println("  ブラウザで上記 Web を開き、このコードを入力してください（一回限り）。")
 }
 
 func runCloudAttach(cfg *config.Config, args []string) {

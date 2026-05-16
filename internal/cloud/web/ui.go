@@ -7,18 +7,23 @@ package web
 //   /term     … Web ターミナル本体（xterm.js）。/ からリンクして開く。
 // 静的アセットは internal/cloud/web/static を go:embed で /static/ 配信。
 
-const loginHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
-<title>claude-master</title>
+// loginHTMLTmpl は Google Sign-In（GIS）。%s に OAuth Web Client ID。
+// GIS が credential(IDトークン)＋g_csrf_token を /auth/google へ POST。
+const loginHTMLTmpl = `<!doctype html><html lang="ja"><meta charset="utf-8">
+<title>claude-master — ログイン</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<body style="font-family:system-ui;max-width:420px;margin:12vh auto;padding:0 16px">
+<body style="font-family:system-ui;max-width:420px;margin:16vh auto;padding:0 16px;text-align:center">
 <h1 style="font-size:20px">claude-master</h1>
-<p>PC 側で <code>claude-master cloud pair</code> を実行し、表示された
-コードを入力してください（一回限り・短時間有効）。</p>
-<form method="post" action="/auth/code">
-  <input name="code" autofocus autocomplete="off" placeholder="PAIRING CODE"
-   style="font-size:18px;letter-spacing:2px;padding:10px;width:100%;box-sizing:border-box;text-transform:uppercase">
-  <button style="margin-top:12px;padding:10px 16px;font-size:16px">接続</button>
-</form>
+<p style="color:#666;font-size:14px">Google アカウントでログインしてください。</p>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<div id="g_id_onload"
+     data-client_id="%s"
+     data-login_uri="/auth/google"
+     data-ux_mode="redirect"></div>
+<div class="g_id_signin" data-type="standard" data-size="large"
+     data-text="signin_with" data-shape="pill"
+     style="display:inline-block;margin-top:16px"></div>
+<noscript>JavaScript を有効にしてください。</noscript>
 </body></html>`
 
 // devicesHTML: アカウントに接続されている端末一覧＋Web ターミナルへの

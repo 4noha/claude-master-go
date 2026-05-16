@@ -28,18 +28,21 @@ func handler() http.Handler {
 
 	proj := os.Getenv("GCP_PROJECT")
 	key := os.Getenv("WEB_SIGNING_KEY")
-	if proj != "" && key != "" {
+	clientID := os.Getenv("GOOGLE_OAUTH_CLIENT_ID")
+	allowed := os.Getenv("ALLOWED_EMAILS")
+	if proj != "" && key != "" && clientID != "" && allowed != "" {
 		st, err := state.New(context.Background(), proj, "relay")
 		if err != nil {
 			log.Printf("web 無効（Firestore 接続失敗）: %v", err)
 		} else {
-			ws := web.New(rl, st, webauth.NewSigner(key))
-			mux.Handle("/", ws.Handler()) // /,/login,/auth,/api,/ws
-			log.Printf("web 管理 UI 有効（project=%s）", proj)
+			ws := web.New(rl, st, webauth.NewSigner(key),
+				clientID, allowed, nil)
+			mux.Handle("/", ws.Handler()) // /,/login,/auth/google,/api,/ws
+			log.Printf("web 管理 UI 有効（project=%s, allow=%s）", proj, allowed)
 			return mux
 		}
 	} else {
-		log.Printf("web 無効（GCP_PROJECT/WEB_SIGNING_KEY 未設定）")
+		log.Printf("web 無効（GCP_PROJECT/WEB_SIGNING_KEY/GOOGLE_OAUTH_CLIENT_ID/ALLOWED_EMAILS 未設定）")
 	}
 	// relay のみ: ヘルスは "/"（/healthz は Google Front End が予約・遮断）
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

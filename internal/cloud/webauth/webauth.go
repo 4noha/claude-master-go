@@ -5,6 +5,7 @@
 package webauth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,6 +15,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"google.golang.org/api/idtoken"
 )
 
 // codeAlphabet は曖昧文字（0/O/1/I/L）を除いた 30 文字。8 文字で ~39bit。
@@ -97,3 +100,34 @@ func (s *Signer) Verify(tok string) (Token, bool) {
 	}
 	return t, true
 }
+
+// --- Google アカウント ID トークン検証（M7f） ---
+
+// GoogleVerifier は GIS の credential（ID トークン）を検証して
+// メールアドレスを返す。テストは fake を注入できる。
+type GoogleVerifier interface {
+	// Verify は idToken を audience(=OAuth Client ID) で検証し、
+	// (email, emailVerified, err) を返す。
+	Verify(ctx context.Context, idToken, audience string) (string, bool, error)
+}
+
+// idtokenVerifier は google.golang.org/api/idtoken による本番実装
+// （署名・aud・iss・exp を Google 公開鍵で検証）。
+type idtokenVerifier struct{}
+
+func (idtokenVerifier) Verify(ctx context.Context, idToken, audience string) (string, bool, error) {
+	p, err := idtoken.Validate(ctx, idToken, audience)
+	if err != nil {
+		return "", false, err
+	}
+	if iss, _ := p.Claims["iss"].(string); iss != "accounts.google.com" &&
+		iss != "https://accounts.google.com" {
+		return "", false, nil
+	}
+	email, _ := p.Claims["email"].(string)
+	ev, _ := p.Claims["email_verified"].(bool)
+	return email, ev, nil
+}
+
+// DefaultGoogleVerifier は本番の Google 検証器。
+var DefaultGoogleVerifier GoogleVerifier = idtokenVerifier{}

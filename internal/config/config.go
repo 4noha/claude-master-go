@@ -45,6 +45,8 @@ type Config struct {
 	GCPProject    string // Firestore プロジェクト ID
 	PCID          string // この PC の識別子（既定 hostname）
 	CloudRelayURL string // Cloud Run relay の wss:// URL
+	GoogleClientID string // Web ログインの OAuth Web Client ID
+	AllowedEmails  string // ログイン許可 Google メール（カンマ区切り）
 }
 
 func home(p string) string {
@@ -131,9 +133,11 @@ func Load() *Config {
 		SessionsDir: home(".claude-master/sessions"),
 		PendingFile: home(".claude-master/pending_resumes.json"),
 
-		GCPProject:    str("GCP_PROJECT", ""),
-		PCID:          str("PC_ID", hostnameOr("pc")),
-		CloudRelayURL: str("CLOUD_RELAY_URL", ""),
+		GCPProject:     str("GCP_PROJECT", ""),
+		PCID:           str("PC_ID", hostnameOr("pc")),
+		CloudRelayURL:  str("CLOUD_RELAY_URL", ""),
+		GoogleClientID: str("GOOGLE_OAUTH_CLIENT_ID", ""),
+		AllowedEmails:  str("ALLOWED_EMAILS", ""),
 	}
 }
 

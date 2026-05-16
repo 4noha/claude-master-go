@@ -30,8 +30,10 @@ import (
 )
 
 // 合成は使わない: 実 Firestore エミュレータ（実 API）＋実 relay＋実
-// PtyProxy（実 resume-burst 録画）＋本番同型 mux で、コード認証→cookie
-// →/api→/ws ブラウザ端末（display-oracle）まで end-to-end 検証。
+// PtyProxy（実 resume-burst 録画）＋本番同型 mux で検証。Google ID
+// トークン検証は本番では idtoken（実 Google 公開鍵）で、ユニットでは
+// 認可ロジックを fake verifier で決定的に検証し、実 Google サインインは
+// chrome-devtools 実ブラウザ e2e（M7f）で担保（合成 green にしない）。
 
 const projectID = "demo-cm"
 
@@ -99,7 +101,6 @@ func fixtureBin(t *testing.T) string {
 		"test", "fixtures", "resume-burst", "bytes.bin")
 }
 
-// prodMux は cloud/relay/main.handler() と同型（/session→relay、他→web）。
 func prodMux(rl *relay.Server, ws *Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/session", rl)
@@ -117,99 +118,193 @@ func newSt(t *testing.T, pc string) *state.Client {
 	return c
 }
 
-func TestAuthCodeCookieAndAPIScope(t *testing.T) {
-	st := newSt(t, "web1")
+const allowEmail = "ok@example.com"
+
+// fakeGV は Google ID トークン検証の差し替え（認可ロジックを決定的に）。
+type fakeGV struct {
+	email    string
+	verified bool
+	err      error
+}
+
+func (f fakeGV) Verify(_ context.Context, _, _ string) (string, bool, error) {
+	return f.email, f.verified, f.err
+}
+
+func newWeb(t *testing.T, st *state.Client, gv webauth.GoogleVerifier) (*Server, *httptest.Server) {
+	t.Helper()
 	rl := relay.NewServer()
-	ws := New(rl, st, webauth.NewSigner("test-key"))
+	ws := New(rl, st, webauth.NewSigner("test-key"), "test-cid", allowEmail, gv)
 	ts := httptest.NewServer(prodMux(rl, ws))
-	defer ts.Close()
+	t.Cleanup(ts.Close)
+	return ws, ts
+}
 
-	// pairing 発行（PC スコープ）
-	code := "ABCD2345"
-	if err := st.CreatePairing(context.Background(),
-		webauth.HashCode(code), "PCX", "PCX", 10*time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	jar := newJar()
-	cl := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
+// authCookie は Google 認証済（許可メール・scope=全 PC）の署名 cookie。
+func authCookie(ws *Server) string {
+	tok := ws.signer.Sign(webauth.Token{
+		PC: allowEmail, Scope: accountScope,
+		Exp: time.Now().Add(time.Hour).Unix(),
+	})
+	return cookieName + "=" + tok
+}
 
-	// 未認証 /api/pcs → 401
-	if r, _ := cl.Get(ts.URL + "/api/pcs"); r == nil || r.StatusCode != 401 {
-		t.Fatalf("未認証 /api/pcs が 401 でない: %v", r)
+func noRedir() *http.Client {
+	return &http.Client{Jar: newJar(),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+}
+
+// Google 認証ゲート（fake verifier・CSRF 二重送信）を決定的に検証。
+func TestGoogleAuthGate(t *testing.T) {
+	st := newSt(t, "gauth")
+	ws, ts := newWeb(t, st, fakeGV{email: allowEmail, verified: true})
+
+	// /login は GIS（client_id 埋め込み）
+	r, _ := http.Get(ts.URL + "/login")
+	lb := bodyStr(r)
+	if !strings.Contains(lb, `data-client_id="test-cid"`) ||
+		!strings.Contains(lb, "accounts.google.com/gsi/client") {
+		t.Fatalf("/login が Google サインインでない")
 	}
-	// 誤コード → 401
-	r, _ := cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {"WRONGXXX"}})
-	if r.StatusCode != 401 {
-		t.Fatalf("誤コードが 401 でない: %d", r.StatusCode)
+
+	post := func(gv webauth.GoogleVerifier, csrfCookie, csrfBody, cred string) *http.Response {
+		ws.gv = gv
+		cl := noRedir()
+		u, _ := url.Parse(ts.URL)
+		if csrfCookie != "" {
+			cl.Jar.SetCookies(u, []*http.Cookie{{Name: "g_csrf_token", Value: csrfCookie}})
+		}
+		form := url.Values{}
+		if csrfBody != "" {
+			form.Set("g_csrf_token", csrfBody)
+		}
+		form.Set("credential", cred)
+		r, _ := cl.PostForm(ts.URL+"/auth/google", form)
+		return r
 	}
-	// 正コード → 302 + cookie
-	r, _ = cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
+
+	// CSRF 欠落 → 403
+	if r := post(fakeGV{email: allowEmail, verified: true}, "", "", "jwt"); r.StatusCode != 403 {
+		t.Fatalf("CSRF 欠落が 403 でない: %d", r.StatusCode)
+	}
+	// CSRF 不一致 → 403
+	if r := post(fakeGV{email: allowEmail, verified: true}, "A", "B", "jwt"); r.StatusCode != 403 {
+		t.Fatalf("CSRF 不一致が 403 でない: %d", r.StatusCode)
+	}
+	// 検証エラー → 401
+	if r := post(fakeGV{err: fmt.Errorf("bad")}, "T", "T", "jwt"); r.StatusCode != 401 {
+		t.Fatalf("検証エラーが 401 でない: %d", r.StatusCode)
+	}
+	// email 未確認 → 401
+	if r := post(fakeGV{email: allowEmail, verified: false}, "T", "T", "jwt"); r.StatusCode != 401 {
+		t.Fatalf("未確認 email が 401 でない: %d", r.StatusCode)
+	}
+	// 許可外メール → 403
+	if r := post(fakeGV{email: "evil@example.com", verified: true}, "T", "T", "jwt"); r.StatusCode != 403 {
+		t.Fatalf("許可外メールが 403 でない: %d", r.StatusCode)
+	}
+	// 許可メール → 302 + cm_session cookie
+	r = post(fakeGV{email: allowEmail, verified: true}, "T", "T", "jwt")
 	if r.StatusCode != 302 {
-		t.Fatalf("正コードが 302 でない: %d", r.StatusCode)
+		t.Fatalf("許可メールが 302 でない: %d", r.StatusCode)
 	}
-	// cookie で /api/pcs → スコープ PC
-	r, _ = cl.Get(ts.URL + "/api/pcs")
-	if r.StatusCode != 200 || !bodyHas(r, `"id":"PCX"`) {
-		t.Fatalf("/api/pcs がスコープを返さない: %d", r.StatusCode)
+	var got string
+	for _, c := range r.Cookies() {
+		if c.Name == cookieName {
+			got = c.Value
+		}
 	}
-	// /api/sessions?pc=PCX → 200（空配列）
-	r, _ = cl.Get(ts.URL + "/api/sessions?pc=PCX")
-	if r.StatusCode != 200 {
-		t.Fatalf("/api/sessions が 200 でない: %d", r.StatusCode)
+	if got == "" {
+		t.Fatal("cm_session cookie が発行されない")
 	}
-	// スコープ外 PC → 403
-	r, _ = cl.Get(ts.URL + "/api/sessions?pc=OTHER")
-	if r.StatusCode != 403 {
-		t.Fatalf("スコープ外が 403 でない: %d", r.StatusCode)
-	}
-	// 一回消費: 同コード再投入は 401
-	r, _ = cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
-	if r.StatusCode != 401 {
-		t.Fatalf("消費済コードが再利用できた: %d", r.StatusCode)
+	if tk, ok := ws.signer.Verify(got); !ok || tk.Scope != accountScope {
+		t.Fatalf("発行 cookie が不正: %+v ok=%v", tk, ok)
 	}
 }
 
-func TestWSViewerAuthGatedRealRecording(t *testing.T) {
+func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
+	st := newSt(t, "web1")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+	do := func(path string) *http.Response {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		req.Header.Set("Cookie", ck)
+		c := noRedir()
+		r, _ := c.Do(req)
+		return r
+	}
+	// 未認証ガード
+	if r, _ := http.Get(ts.URL + "/api/devices"); r.StatusCode != 401 {
+		t.Fatalf("未認証 /api/devices が 401 でない: %d", r.StatusCode)
+	}
+	if r, _ := noRedir().Get(ts.URL + "/"); r.StatusCode != 302 {
+		t.Fatalf("未認証 / が /login へ誘導しない: %d", r.StatusCode)
+	}
+	// 実 Firestore に 2 セッション（稼働 1）
+	st.PushStatus(context.Background(), []map[string]any{
+		{"key": "s1", "session_id": "s1", "short_dir": "d1", "is_active": true,
+			"pid": float64(1), "cwd": "/a", "start_time": "x",
+			"cpu_percent": float64(0), "mem_mb": float64(0)},
+		{"key": "s2", "session_id": "s2", "short_dir": "d2", "is_active": false,
+			"pid": float64(2), "cwd": "/b", "start_time": "y",
+			"cpu_percent": float64(0), "mem_mb": float64(0)},
+	})
+	// scope="*" の /api/devices は全 PC（ここでは web1）を集計
+	db := bodyStr(do("/api/devices"))
+	if !strings.Contains(db, `"id":"web1"`) ||
+		!strings.Contains(db, `"sessions":2`) ||
+		!strings.Contains(db, `"active":1`) {
+		t.Fatalf("/api/devices 集計が想定外: %s", db)
+	}
+	// /api/sessions?pc=web1 → 200、pc 無し（scope=*）→ 403
+	if r := do("/api/sessions?pc=web1"); r.StatusCode != 200 {
+		t.Fatalf("/api/sessions?pc=web1 が 200 でない: %d", r.StatusCode)
+	}
+	if r := do("/api/sessions"); r.StatusCode != 403 {
+		t.Fatalf("scope=* で pc 無し /api/sessions が 403 でない: %d", r.StatusCode)
+	}
+	// / は端末一覧、/term は xterm
+	if !strings.Contains(bodyStr(do("/")), "/static/devices.js") {
+		t.Fatal("認証後 / が端末一覧でない")
+	}
+	tb := bodyStr(do("/term?pc=web1&sid=s1"))
+	if !strings.Contains(tb, "/static/xterm.js") || !strings.Contains(tb, "/static/term.js") {
+		t.Fatal("/term が xterm ターミナルでない")
+	}
+	// 静的アセット
+	for _, a := range []struct{ p, want string }{
+		{"/static/xterm.css", ".xterm"},
+		{"/static/addon-fit.js", "FitAddon"},
+		{"/static/term.js", "WebSocket"},
+		{"/static/devices.js", "/term?pc="},
+	} {
+		if !strings.Contains(bodyStr(do(a.p)), a.want) {
+			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
+		}
+	}
+	if n := bodyLen(do("/static/xterm.js")); n < 100000 {
+		t.Fatalf("/static/xterm.js が実体でない（%d bytes）", n)
+	}
+}
+
+func TestWSViewerWithGoogleCookieRealRecording(t *testing.T) {
 	bin := fixtureBin(t)
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("fixture 未配置: %v", err)
 	}
 	st := newSt(t, "web2")
-	rl := relay.NewServer()
-	ws := New(rl, st, webauth.NewSigner("test-key2"))
-	ts := httptest.NewServer(prodMux(rl, ws))
-	defer ts.Close()
+	ws, ts := newWeb(t, st, fakeGV{})
 	base := "ws" + strings.TrimPrefix(ts.URL, "http")
 
-	// 未認証 /ws → 401（cookie 必須）
+	// 未認証 /ws → 拒否
 	if _, _, err := websocket.Dial(context.Background(),
 		base+"/ws?pc=PCY&sid=S", nil); err == nil {
 		t.Fatal("未認証 /ws が拒否されない")
 	}
+	ck := authCookie(ws) // Google 認証済 cookie（scope=*）
 
-	// pairing→cookie
-	code := "WSAUTH22"
-	st.CreatePairing(context.Background(), webauth.HashCode(code),
-		"PCY", "PCY", 10*time.Minute)
-	jar := newJar()
-	cl := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
-	var cookie string
-	u, _ := url.Parse(ts.URL)
-	for _, c := range jar.Cookies(u) {
-		if c.Name == cookieName {
-			cookie = c.Name + "=" + c.Value
-		}
-	}
-	if cookie == "" {
-		t.Fatal("cookie 取得失敗")
-	}
-
-	// 実 PtyProxy（実録画）を source bridge で relay へ
 	p, err := ptyproxy.Start([]string{"/bin/sh", "-c", "cat " + bin + "; sleep 10"}, 164, 50)
 	if err != nil {
 		t.Fatal(err)
@@ -228,11 +323,10 @@ func TestWSViewerAuthGatedRealRecording(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go relay.BridgeSource(ctx, base, "S", uname) // 起こされた agent 相当
+	go relay.BridgeSource(ctx, base, "S", uname)
 
-	// 認証済ブラウザ相当: cookie 付きで /ws viewer 接続
 	vc, _, err := websocket.Dial(ctx, base+"/ws?pc=PCY&sid=S",
-		&websocket.DialOptions{HTTPHeader: http.Header{"Cookie": {cookie}}})
+		&websocket.DialOptions{HTTPHeader: http.Header{"Cookie": {ck}}})
 	if err != nil {
 		t.Fatalf("認証済 /ws 接続失敗: %v", err)
 	}
@@ -272,7 +366,7 @@ func TestWSViewerAuthGatedRealRecording(t *testing.T) {
 			v.Feed([]byte(fr[len(fr)-1]))
 			if strings.Contains(strings.Join(v.VisibleLines(), "\n"),
 				"bypass permissions") {
-				return // 認証済ブラウザ経路で実録画が描画された
+				return
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -284,7 +378,7 @@ func TestWSViewerAuthGatedRealRecording(t *testing.T) {
 
 func bodyHas(r *http.Response, sub string) bool {
 	defer r.Body.Close()
-	b, _ := io.ReadAll(r.Body) // 全読込（xterm.js は 283KB）
+	b, _ := io.ReadAll(r.Body)
 	return strings.Contains(string(b), sub)
 }
 
@@ -294,8 +388,6 @@ func bodyLen(r *http.Response) int {
 	return len(b)
 }
 
-// bodyStr は本文を 1 回だけ読む（同一 resp に bodyHas を複数回呼ぶと
-// body 二重読みで空になるため、複数 substring 検査はこれで）。
 func bodyStr(r *http.Response) string {
 	defer r.Body.Close()
 	b, _ := io.ReadAll(r.Body)
@@ -323,118 +415,4 @@ func (j *cookieJar) Cookies(_ *url.URL) []*http.Cookie {
 		out = append(out, c)
 	}
 	return out
-}
-
-func TestStaticAssetsAndSPAServed(t *testing.T) {
-	st := newSt(t, "web3")
-	rl := relay.NewServer()
-	ws := New(rl, st, webauth.NewSigner("k3"))
-	ts := httptest.NewServer(prodMux(rl, ws))
-	defer ts.Close()
-	cl := &http.Client{Jar: newJar(),
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}}
-
-	// 未認証 / → /login へ
-	r, _ := cl.Get(ts.URL + "/")
-	if r.StatusCode != 302 || r.Header.Get("Location") != "/login" {
-		t.Fatalf("未認証 / が /login へ誘導しない: %d %s",
-			r.StatusCode, r.Header.Get("Location"))
-	}
-	r, _ = cl.Get(ts.URL + "/login")
-	if !bodyHas(r, `action="/auth/code"`) {
-		t.Fatal("login にコード入力フォームが無い")
-	}
-	// 認証
-	code := "SPASERV1"
-	st.CreatePairing(context.Background(), webauth.HashCode(code),
-		"PCZ", "PCZ", 10*time.Minute)
-	cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
-	// 認証後 / は端末一覧ページ（devices.js を読む・xterm は載せない）
-	r, _ = cl.Get(ts.URL + "/")
-	if r.StatusCode != 200 || !bodyHas(r, "/static/devices.js") {
-		t.Fatalf("認証後 / が端末一覧ページでない: %d", r.StatusCode)
-	}
-	// /term は Web ターミナル（xterm + term.js）。/ からリンクして開く
-	r, _ = cl.Get(ts.URL + "/term?pc=PCZ&sid=x")
-	tb := bodyStr(r)
-	if r.StatusCode != 200 ||
-		!strings.Contains(tb, "/static/xterm.js") ||
-		!strings.Contains(tb, "/static/term.js") {
-		t.Fatalf("/term が xterm ターミナルページでない: %d", r.StatusCode)
-	}
-	// devices ページは端末一覧の体裁
-	r, _ = cl.Get(ts.URL + "/")
-	if !bodyHas(r, "端末") {
-		t.Fatal("/ が端末一覧の体裁でない")
-	}
-	// 自前ファイル（非圧縮）は内容で、固定版 xterm.js は実体サイズで検証
-	for _, a := range []struct{ p, want string }{
-		{"/static/xterm.css", ".xterm"},
-		{"/static/addon-fit.js", "FitAddon"},
-		{"/static/term.js", "WebSocket"},
-		{"/static/devices.js", "/term?pc="},
-	} {
-		rr, err := cl.Get(ts.URL + a.p)
-		if err != nil || rr.StatusCode != 200 {
-			t.Fatalf("%s が 200 でない: %v", a.p, rr)
-		}
-		if !bodyHas(rr, a.want) {
-			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
-		}
-	}
-	rr, err := cl.Get(ts.URL + "/static/xterm.js")
-	if err != nil || rr.StatusCode != 200 {
-		t.Fatalf("/static/xterm.js が 200 でない: %v", rr)
-	}
-	if n := bodyLen(rr); n < 100000 { // 固定版 xterm@5.3.0 は ~283KB
-		t.Fatalf("/static/xterm.js が実体でない（%d bytes）", n)
-	}
-}
-
-func TestDevicesAPIAndTermAuthGate(t *testing.T) {
-	st := newSt(t, "web4")
-	rl := relay.NewServer()
-	ws := New(rl, st, webauth.NewSigner("k4"))
-	ts := httptest.NewServer(prodMux(rl, ws))
-	defer ts.Close()
-	cl := &http.Client{Jar: newJar(),
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}}
-
-	// 未認証ガード
-	if r, _ := cl.Get(ts.URL + "/api/devices"); r.StatusCode != 401 {
-		t.Fatalf("未認証 /api/devices が 401 でない: %d", r.StatusCode)
-	}
-	if r, _ := cl.Get(ts.URL + "/term?pc=P&sid=s"); r.StatusCode != 302 ||
-		r.Header.Get("Location") != "/login" {
-		t.Fatalf("未認証 /term が /login へ誘導しない: %d", r.StatusCode)
-	}
-
-	// セッション 2 件（稼働中 1）を実 Firestore へ
-	st.PushStatus(context.Background(), []map[string]any{
-		{"key": "s1", "session_id": "s1", "short_dir": "d1", "is_active": true,
-			"pid": float64(1), "cwd": "/a", "start_time": "x",
-			"cpu_percent": float64(0), "mem_mb": float64(0)},
-		{"key": "s2", "session_id": "s2", "short_dir": "d2", "is_active": false,
-			"pid": float64(2), "cwd": "/b", "start_time": "y",
-			"cpu_percent": float64(0), "mem_mb": float64(0)},
-	})
-	code := "DEVAPI22"
-	st.CreatePairing(context.Background(), webauth.HashCode(code),
-		"web4", "web4", 10*time.Minute)
-	cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
-
-	r, _ := cl.Get(ts.URL + "/api/devices")
-	if r.StatusCode != 200 {
-		t.Fatalf("/api/devices が 200 でない: %d", r.StatusCode)
-	}
-	db := bodyStr(r)
-	if !strings.Contains(db, `"id":"web4"`) ||
-		!strings.Contains(db, `"sessions":2`) ||
-		!strings.Contains(db, `"active":1`) {
-		t.Fatalf("/api/devices の集計が想定外: %s", db)
-	}
 }

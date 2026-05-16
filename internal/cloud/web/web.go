@@ -1,16 +1,20 @@
 // Package web は Cloud Run relay に同居する管理 UI バックエンド（M7）。
-// ブラウザは GCP 資格情報を持たず pairing code →（消費）→ HMAC 署名
-// cookie で認証。Firestore はサーバ側 state.Client（Cloud Run ランタイム
+// 認証は **Google アカウントログイン**（GIS の ID トークンを idtoken で
+// 検証→許可メール allowlist→HMAC 署名 cookie）。ブラウザは GCP 資格
+// 情報を持たず、Firestore はサーバ側 state.Client（Cloud Run ランタイム
 // SA / ローカルはエミュレータ）経由のみ。/ws は認証後に既存 relay の
 // viewer として中継（relay 本体・protocol は無改変＝不変条件死守）。
+// cookie scope="*" はアカウント全体（全 PC）を表す。
 package web
 
 import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/cloud/relay"
@@ -23,22 +27,39 @@ var staticFS embed.FS
 
 const cookieName = "cm_session"
 const cookieTTL = 12 * time.Hour
+const accountScope = "*" // 全 PC（アカウント）スコープ
 
 type Server struct {
-	rl     *relay.Server
-	st     *state.Client
-	signer *webauth.Signer
+	rl       *relay.Server
+	st       *state.Client
+	signer   *webauth.Signer
+	clientID string          // Google OAuth Web Client ID
+	allowed  map[string]bool // ログイン許可メール（小文字）
+	gv       webauth.GoogleVerifier
 }
 
-func New(rl *relay.Server, st *state.Client, signer *webauth.Signer) *Server {
-	return &Server{rl: rl, st: st, signer: signer}
+// New は Google ログイン版。allowedEmails はカンマ区切り、gv が nil なら
+// 本番 idtoken 検証器。
+func New(rl *relay.Server, st *state.Client, signer *webauth.Signer,
+	clientID, allowedEmails string, gv webauth.GoogleVerifier) *Server {
+	am := map[string]bool{}
+	for _, e := range strings.Split(allowedEmails, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			am[e] = true
+		}
+	}
+	if gv == nil {
+		gv = webauth.DefaultGoogleVerifier
+	}
+	return &Server{rl: rl, st: st, signer: signer,
+		clientID: clientID, allowed: am, gv: gv}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.root)
 	mux.HandleFunc("/login", s.login)
-	mux.HandleFunc("/auth/code", s.authCode)
+	mux.HandleFunc("/auth/google", s.authGoogle)
 	mux.HandleFunc("/auth/logout", s.logout)
 	mux.HandleFunc("/term", s.term)
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
@@ -97,46 +118,48 @@ func (s *Server) term(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(loginHTML))
+	fmt.Fprintf(w, loginHTMLTmpl, s.clientID)
 }
 
-// authCode: pairing code を消費して cookie を発行（フォーム/JSON 両対応）。
-func (s *Server) authCode(w http.ResponseWriter, r *http.Request) {
+// authGoogle: GIS の credential(ID トークン)を検証し、許可メールのみ
+// cookie 発行（scope=アカウント全体）。
+func (s *Server) authGoogle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST のみ", http.StatusMethodNotAllowed)
 		return
 	}
-	code := r.FormValue("code")
-	if code == "" {
-		var body struct{ Code string `json:"code"` }
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		code = body.Code
+	// GIS の二重送信 CSRF トークン検証（cookie==body）。
+	cc, _ := r.Cookie("g_csrf_token")
+	if cc == nil || cc.Value == "" || cc.Value != r.FormValue("g_csrf_token") {
+		http.Error(w, "CSRF 検証失敗", http.StatusForbidden)
+		return
 	}
-	if code == "" {
-		http.Error(w, "code が必要", http.StatusBadRequest)
+	cred := r.FormValue("credential")
+	if cred == "" {
+		http.Error(w, "credential が必要", http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	pc, scope, ok, err := s.st.ConsumePairing(ctx, webauth.HashCode(code))
-	if err != nil {
-		http.Error(w, "認証処理エラー", http.StatusInternalServerError)
+	email, verified, err := s.gv.Verify(ctx, cred, s.clientID)
+	if err != nil || email == "" || !verified {
+		http.Error(w, "Google 認証に失敗しました", http.StatusUnauthorized)
 		return
 	}
-	if !ok {
-		http.Error(w, "コードが無効か期限切れです", http.StatusUnauthorized)
+	if !s.allowed[strings.ToLower(email)] {
+		http.Error(w, "このアカウントは許可されていません", http.StatusForbidden)
 		return
 	}
 	tok := s.signer.Sign(webauth.Token{
-		PC: pc, Scope: scope, Exp: time.Now().Add(cookieTTL).Unix(),
+		PC: email, Scope: accountScope, Exp: time.Now().Add(cookieTTL).Unix(),
 	})
 	s.setCookie(w, r, tok)
-	if r.Header.Get("Accept") == "application/json" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"pc": pc, "scope": scope})
-		return
-	}
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// allows は cookie scope が pc を許可するか（"*"=全 PC）。
+func (s *Server) allows(t webauth.Token, pc string) bool {
+	return t.Scope == accountScope || t.Scope == pc
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -158,35 +181,53 @@ func (s *Server) apiGuard(h func(http.ResponseWriter, *http.Request, webauth.Tok
 	}
 }
 
-// apiPCs: スコープ内 PC 一覧（現状 scope=単一 PC）。
-func (s *Server) apiPCs(w http.ResponseWriter, r *http.Request, t webauth.Token) {
-	json.NewEncoder(w).Encode([]map[string]string{{"id": t.Scope}})
+// devicePCs は scope に応じた対象 PC 群（"*"=全 PC）。
+func (s *Server) devicePCs(ctx context.Context, t webauth.Token) []string {
+	if t.Scope == accountScope {
+		ps, _ := s.st.ListPCs(ctx)
+		return ps
+	}
+	return []string{t.Scope}
 }
 
-// apiDevices: アカウント（スコープ）に接続されている端末の一覧＋
-// セッション数/アクティブ数。端末一覧ページが描画に使う。
+// apiPCs: スコープ内 PC 一覧。
+func (s *Server) apiPCs(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	out := []map[string]string{}
+	for _, pc := range s.devicePCs(ctx, t) {
+		out = append(out, map[string]string{"id": pc})
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+// apiDevices: アカウントに接続されている端末一覧＋セッション数/稼働数。
 func (s *Server) apiDevices(w http.ResponseWriter, r *http.Request, t webauth.Token) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	ss, _ := s.st.ListSessions(ctx, t.Scope) // 現状 scope=単一 PC
-	active := 0
-	for _, x := range ss {
-		if b, _ := x["is_active"].(bool); b {
-			active++
+	out := []map[string]any{}
+	for _, pc := range s.devicePCs(ctx, t) {
+		ss, _ := s.st.ListSessions(ctx, pc)
+		active := 0
+		for _, x := range ss {
+			if b, _ := x["is_active"].(bool); b {
+				active++
+			}
 		}
+		out = append(out, map[string]any{
+			"id": pc, "sessions": len(ss), "active": active,
+		})
 	}
-	json.NewEncoder(w).Encode([]map[string]any{{
-		"id": t.Scope, "sessions": len(ss), "active": active,
-	}})
+	json.NewEncoder(w).Encode(out)
 }
 
 // apiSessions: ?pc=<PC> のセッション一覧（スコープ検証）。
 func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request, t webauth.Token) {
 	pc := r.URL.Query().Get("pc")
-	if pc == "" {
+	if pc == "" && t.Scope != accountScope {
 		pc = t.Scope
 	}
-	if pc != t.Scope {
+	if pc == "" || !s.allows(t, pc) {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
@@ -212,11 +253,11 @@ func (s *Server) wsViewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pc := r.URL.Query().Get("pc")
-	if pc == "" {
+	if pc == "" && t.Scope != accountScope {
 		pc = t.Scope
 	}
 	sid := r.URL.Query().Get("sid")
-	if sid == "" || pc != t.Scope {
+	if sid == "" || pc == "" || !s.allows(t, pc) {
 		http.Error(w, "pc(scope 内)/sid が必要", http.StatusBadRequest)
 		return
 	}
