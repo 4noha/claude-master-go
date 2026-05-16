@@ -1,0 +1,49 @@
+
+⏺ Update(README.md)
+  ⎿  Added 2 lines, removed 1 line
+      218  | `9784706` | R1: `_truncate_visible` バッファ末尾の不完全 UTF-8 ガード、R2: `reset()` で `_max_footer_height` リセット、R3: `cursor_y` スキップ時
+           の `_vis_pending_blank` クリア、R4: アイドル時の新規クライアントへ初期状態送信（`_catchup_new_clients`） |
+      219  | `b08a1de` | 複数行貼り付け時の Enter 誤実行: `\x1b[?2004h` (bracketed paste) を host/clients に転送。Alt+Enter（`\x1b\r`）は入力を raw 転送して
+           いるため追加対応不要 |
+      220  | `9e48984` | ログ間の空行消失: `_vis_pending_blank` ガードを `new_visible_logs or _emitted_visible` に拡張。同名ツール2回目ヘッダ消失: `⏺`/`⎿` 行
+           を `_recent_emitted` 重複チェックから免除（スクリーンクリア後は除く） |
+      221 -| HEAD | `⏺` 前の空行消失: `_is_footer_text` スキップ時に `⏺` 行では `_vis_pending_blank` をクリアしないよう修正。テーブル差分流れ: 可視行の即 emi
+          -t を `⏺`/`⎿` 行限定に絞り込み |
+      221 +| `3f7b756` | `⏺` 前の空行消失: `_is_footer_text` スキップ時に `⏺` 行では `_vis_pending_blank` をクリアしないよう修正。テーブル差分流れ: 可視行の
+          +即 emit を `⏺`/`⎿` 行限定に絞り込み |
+      222 +| HEAD | テーブル幅拡張の二重 emit: in-place 変化を追跡するとき変化後の内容を `_recent_emitted` に追加し、history から流れてきた最終版が再 emit さ
+          +れないよう修正 |
+      223
+      224  ### 設計上の制約（バグではない）
+      225
+
+⏺ Bash(cd "/Users/4noha/works/claude‐master" && git add pty_emulator.py README.md && git commit -m "$(cat <<'EOF'
+      Fix table double-emit: add in-place updated content t…)
+  ⎿  [master 458d069] Fix table double-emit: add in-place updated content to _recent_emitted
+      2 files changed, 6 insertions(+), 2 deletions(-)
+
+⏺ 修正内容（458d069）：
+
+  in-place で行の内容が変化したとき（prev != ansi）、変化後の ansi を _recent_emitted に追加するようにしました。これにより、その行が後から history
+  に流れてきても「既知の内容」として再 emit されず、幅違いテーブルが重複して出る問題が解消されます。
+
+  ただし副作用として、ログに残るのは初回描画（最初の幅）版のみで、最終的な幅の広い版は見えません。現状の設計では「history スクロール =
+  確定版」がその版になりますが、in-place 更新が最終版を上書きしてしまうためです。
+
+✻ Baked for 4m 23s
+
+❯ ⏺ 修正内容（458d069）：
+
+
+    ただし副作用として、ログに残るのは初回描画（最初の幅）版のみで、最終的な幅の広い版は見えません。現状の設計では「history スクロール =
+  ✻ Baked for 4m 23s
+  これって最後の文字が消えてますか？claudeを再起動したのですが
+  ⎿  ⧉ Selected 1 lines from CLAUDE.md in Visual Studio Code
+
+✽ Narrowing footer keyword patterns…
+  ⎿  Next: Eliminate double _find_footer_start call per render cycle
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to show tasks
