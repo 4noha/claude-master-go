@@ -190,6 +190,19 @@ SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テス
   左右スワイプ（touchstart/end のΔx>60 かつ |Δx|>|Δy|*1.4、左=次/
   右=前、巡回）で隣の /term へ location 遷移（WS/xterm はページ遷移で
   クリーン再接続）。取得失敗時は無効化しターミナルは使用可。
+- **スクロール破壊の修正（ホイール→SCROLL 変換）**: proxy は毎フレーム
+  絶対座標で全画面再描画（ミニ tmux）するため、xterm が自前
+  scrollback でローカルスクロールすると衝突し表示が壊れる。
+  `scrollback:0` で xterm 自前スクロールを無効化し、ホイール/
+  トラックパッド（`wheel` を capture+preventDefault）と PageUp/PageDown
+  を **SCROLL_MAGIC(0xff 0xfe + int16 BE dy)** へ変換して proxy の
+  per-client ScrollRenderer を pan（socket_client の sendScroll と
+  同一ワイヤ／符号: dy<0=古い・上, dy>0=新しい・下, 32767=live）。
+  遡り中に実入力があれば先に FOLLOW(32767) を送って live 復帰
+  （socket_client の pkScrolled リセットと同規律）。Home/End は
+  claude の行編集を壊さないため非変換（Shift+Home/End のみ最古/live）。
+  proxy 側 `parseClientInput` の scrollMagic 処理は `WheelScroll`
+  config 非依存で常時有効＝relay 越し Web でもそのまま効く。
 
 ### RESIZE 送信に関する重要な訂正（誤診→撤回）
 

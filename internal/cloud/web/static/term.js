@@ -23,6 +23,21 @@ function resizeFrame(rows, cols) {
   return b;
 }
 
+// SCROLL_MAGIC(0xff 0xfe) + int16 BE dy。proxy(server.go
+// parseClientInput)が受けて per-client ScrollRenderer を pan＝
+// ミニ tmux のスクリーン内スクロール。socket_client の sendScroll と
+// 同一ワイヤ形式（dy<0=古い/上, dy>0=新しい/下, 32767=live 復帰）。
+// xterm 自前スクロールは絶対座標再描画と衝突し表示破壊するので使わず
+// 必ずこの変換を通す（他環境＝socket_client/nav と同じ規律）。
+const SCROLL_STEP = 3;       // ホイール 1 ノッチあたり行
+const PAGE_STEP = 10;        // PageUp/PageDown 1 回あたり行
+const FOLLOW_DY = 32767;     // live（最下部）復帰
+const TOP_DY = -32768;       // 最古へ（Home 相当・clamp16 と同値）
+function scrollFrame(dy) {
+  const v = dy & 0xffff;     // int16 二の補数 下位16bit
+  return new Uint8Array([0xff, 0xfe, (v >> 8) & 0xff, v & 0xff]);
+}
+
 async function jget(u) {
   const r = await fetch(u, { headers: { Accept: "application/json" } });
   if (!r.ok) throw new Error(u + " -> " + r.status);
@@ -99,7 +114,11 @@ function run() {
 
   setupSwitch();
 
-  const term = new Terminal({ cursorBlink: true,
+  // scrollback:0 ＝ xterm 自前スクロールバックを持たない。proxy が
+  // 毎フレーム絶対座標で全画面再描画する（ミニ tmux）ため、xterm が
+  // ローカルスクロールすると衝突して表示が壊れる。スクロールは proxy
+  // 側の managed scroll に一本化する（他環境の socket_client と同じ）。
+  const term = new Terminal({ cursorBlink: true, scrollback: 0,
     fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -110,6 +129,10 @@ function run() {
   const ws = new WebSocket(proto + "//" + location.host + "/ws?pc=" +
     encodeURIComponent(pc) + "&sid=" + encodeURIComponent(sid));
   ws.binaryType = "arraybuffer";
+  const wsend = (b) => { if (ws.readyState === 1) ws.send(b); };
+
+  let scrolled = false; // proxy 側で遡り中（タイプで live 復帰させる）
+  const doScroll = (dy) => { wsend(scrollFrame(dy)); scrolled = true; };
 
   ws.onopen = () => {
     ws.send(resizeFrame(term.rows, term.cols)); // 自分のビューポートサイズ
@@ -120,8 +143,33 @@ function run() {
   ws.onerror = () => { $("stat").textContent = "エラー"; };
 
   term.onData((d) => {
-    if (ws.readyState === 1) ws.send(enc.encode(d));
+    // 遡り中に実入力 → まず live 復帰させてからキーを送る
+    // （socket_client の pkScrolled リセットと同規律）。
+    if (scrolled) { wsend(scrollFrame(FOLLOW_DY)); scrolled = false; }
+    wsend(enc.encode(d));
   });
+
+  // ホイール/トラックパッド → proxy の managed scroll へ変換。
+  // xterm/ブラウザのネイティブスクロールは止める（衝突＝表示破壊源）。
+  term.element.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    doScroll(e.deltaY > 0 ? SCROLL_STEP : -SCROLL_STEP);
+  }, { passive: false, capture: true });
+
+  // PageUp/PageDown は claude へ送らずスクリーン内スクロールへ変換
+  // （ユーザー要望「PageUp のときのように」）。Home/End 等は claude の
+  // 行編集を壊さないため変換しない。
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== "keydown") return true;
+    if (e.key === "PageUp") { doScroll(-PAGE_STEP); return false; }
+    if (e.key === "PageDown") { doScroll(PAGE_STEP); return false; }
+    if (e.shiftKey && e.key === "Home") { doScroll(TOP_DY); return false; }
+    if (e.shiftKey && e.key === "End") {
+      wsend(scrollFrame(FOLLOW_DY)); scrolled = false; return false;
+    }
+    return true;
+  });
+
   window.addEventListener("resize", () => {
     fit.fit();
     if (ws.readyState === 1) ws.send(resizeFrame(term.rows, term.cols));

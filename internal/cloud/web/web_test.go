@@ -286,6 +286,10 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "WebSocket"},
 		{"/static/term.js", "touchend"},          // スワイプ切替
 		{"/static/term.js", `qs.get("dir")`},     // ディレクトリ名表示
+		{"/static/term.js", "scrollback: 0"},     // xterm 自前スクロール無効
+		{"/static/term.js", "scrollFrame"},       // ホイール→SCROLL 変換
+		{"/static/term.js", `"wheel"`},           // ホイール捕捉
+		{"/static/term.js", "PageUp"},            // PageUp→スクリーン内
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},          // 一覧→term へ dir 受渡し
 	} {
