@@ -294,6 +294,14 @@ func bodyLen(r *http.Response) int {
 	return len(b)
 }
 
+// bodyStr は本文を 1 回だけ読む（同一 resp に bodyHas を複数回呼ぶと
+// body 二重読みで空になるため、複数 substring 検査はこれで）。
+func bodyStr(r *http.Response) string {
+	defer r.Body.Close()
+	b, _ := io.ReadAll(r.Body)
+	return string(b)
+}
+
 type cookieJar struct {
 	mu sync.Mutex
 	cs map[string]*http.Cookie
@@ -343,16 +351,30 @@ func TestStaticAssetsAndSPAServed(t *testing.T) {
 	st.CreatePairing(context.Background(), webauth.HashCode(code),
 		"PCZ", "PCZ", 10*time.Minute)
 	cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
-	// 認証後 / は xterm SPA
+	// 認証後 / は端末一覧ページ（devices.js を読む・xterm は載せない）
 	r, _ = cl.Get(ts.URL + "/")
-	if r.StatusCode != 200 || !bodyHas(r, "/static/xterm.js") {
-		t.Fatalf("認証後 / が xterm SPA でない: %d", r.StatusCode)
+	if r.StatusCode != 200 || !bodyHas(r, "/static/devices.js") {
+		t.Fatalf("認証後 / が端末一覧ページでない: %d", r.StatusCode)
+	}
+	// /term は Web ターミナル（xterm + term.js）。/ からリンクして開く
+	r, _ = cl.Get(ts.URL + "/term?pc=PCZ&sid=x")
+	tb := bodyStr(r)
+	if r.StatusCode != 200 ||
+		!strings.Contains(tb, "/static/xterm.js") ||
+		!strings.Contains(tb, "/static/term.js") {
+		t.Fatalf("/term が xterm ターミナルページでない: %d", r.StatusCode)
+	}
+	// devices ページは端末一覧の体裁
+	r, _ = cl.Get(ts.URL + "/")
+	if !bodyHas(r, "端末") {
+		t.Fatal("/ が端末一覧の体裁でない")
 	}
 	// 自前ファイル（非圧縮）は内容で、固定版 xterm.js は実体サイズで検証
 	for _, a := range []struct{ p, want string }{
 		{"/static/xterm.css", ".xterm"},
 		{"/static/addon-fit.js", "FitAddon"},
-		{"/static/app.js", "WebSocket"},
+		{"/static/term.js", "WebSocket"},
+		{"/static/devices.js", "/term?pc="},
 	} {
 		rr, err := cl.Get(ts.URL + a.p)
 		if err != nil || rr.StatusCode != 200 {
@@ -368,5 +390,51 @@ func TestStaticAssetsAndSPAServed(t *testing.T) {
 	}
 	if n := bodyLen(rr); n < 100000 { // 固定版 xterm@5.3.0 は ~283KB
 		t.Fatalf("/static/xterm.js が実体でない（%d bytes）", n)
+	}
+}
+
+func TestDevicesAPIAndTermAuthGate(t *testing.T) {
+	st := newSt(t, "web4")
+	rl := relay.NewServer()
+	ws := New(rl, st, webauth.NewSigner("k4"))
+	ts := httptest.NewServer(prodMux(rl, ws))
+	defer ts.Close()
+	cl := &http.Client{Jar: newJar(),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+
+	// 未認証ガード
+	if r, _ := cl.Get(ts.URL + "/api/devices"); r.StatusCode != 401 {
+		t.Fatalf("未認証 /api/devices が 401 でない: %d", r.StatusCode)
+	}
+	if r, _ := cl.Get(ts.URL + "/term?pc=P&sid=s"); r.StatusCode != 302 ||
+		r.Header.Get("Location") != "/login" {
+		t.Fatalf("未認証 /term が /login へ誘導しない: %d", r.StatusCode)
+	}
+
+	// セッション 2 件（稼働中 1）を実 Firestore へ
+	st.PushStatus(context.Background(), []map[string]any{
+		{"key": "s1", "session_id": "s1", "short_dir": "d1", "is_active": true,
+			"pid": float64(1), "cwd": "/a", "start_time": "x",
+			"cpu_percent": float64(0), "mem_mb": float64(0)},
+		{"key": "s2", "session_id": "s2", "short_dir": "d2", "is_active": false,
+			"pid": float64(2), "cwd": "/b", "start_time": "y",
+			"cpu_percent": float64(0), "mem_mb": float64(0)},
+	})
+	code := "DEVAPI22"
+	st.CreatePairing(context.Background(), webauth.HashCode(code),
+		"web4", "web4", 10*time.Minute)
+	cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
+
+	r, _ := cl.Get(ts.URL + "/api/devices")
+	if r.StatusCode != 200 {
+		t.Fatalf("/api/devices が 200 でない: %d", r.StatusCode)
+	}
+	db := bodyStr(r)
+	if !strings.Contains(db, `"id":"web4"`) ||
+		!strings.Contains(db, `"sessions":2`) ||
+		!strings.Contains(db, `"active":1`) {
+		t.Fatalf("/api/devices の集計が想定外: %s", db)
 	}
 }

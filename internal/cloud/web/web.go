@@ -40,7 +40,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login", s.login)
 	mux.HandleFunc("/auth/code", s.authCode)
 	mux.HandleFunc("/auth/logout", s.logout)
+	mux.HandleFunc("/term", s.term)
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
+	mux.HandleFunc("/api/devices", s.apiGuard(s.apiDevices))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
 	mux.HandleFunc("/ws", s.wsViewer)
 	sub, _ := fs.Sub(staticFS, "static")
@@ -80,7 +82,17 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(appHTML)) // M7c で xterm.js SPA に差し替え
+	w.Write([]byte(devicesHTML)) // アカウントの端末一覧（ランディング）
+}
+
+// term は Web ターミナル本体（xterm.js）。devices ページからリンク。
+func (s *Server) term(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.auth(r); !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(termHTML))
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +161,23 @@ func (s *Server) apiGuard(h func(http.ResponseWriter, *http.Request, webauth.Tok
 // apiPCs: スコープ内 PC 一覧（現状 scope=単一 PC）。
 func (s *Server) apiPCs(w http.ResponseWriter, r *http.Request, t webauth.Token) {
 	json.NewEncoder(w).Encode([]map[string]string{{"id": t.Scope}})
+}
+
+// apiDevices: アカウント（スコープ）に接続されている端末の一覧＋
+// セッション数/アクティブ数。端末一覧ページが描画に使う。
+func (s *Server) apiDevices(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	ss, _ := s.st.ListSessions(ctx, t.Scope) // 現状 scope=単一 PC
+	active := 0
+	for _, x := range ss {
+		if b, _ := x["is_active"].(bool); b {
+			active++
+		}
+	}
+	json.NewEncoder(w).Encode([]map[string]any{{
+		"id": t.Scope, "sessions": len(ss), "active": active,
+	}})
 }
 
 // apiSessions: ?pc=<PC> のセッション一覧（スコープ検証）。
