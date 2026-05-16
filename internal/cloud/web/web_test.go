@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -283,9 +284,14 @@ func TestWSViewerAuthGatedRealRecording(t *testing.T) {
 
 func bodyHas(r *http.Response, sub string) bool {
 	defer r.Body.Close()
-	b := make([]byte, 4096)
-	n, _ := r.Body.Read(b)
-	return strings.Contains(string(b[:n]), sub)
+	b, _ := io.ReadAll(r.Body) // 全読込（xterm.js は 283KB）
+	return strings.Contains(string(b), sub)
+}
+
+func bodyLen(r *http.Response) int {
+	defer r.Body.Close()
+	b, _ := io.ReadAll(r.Body)
+	return len(b)
 }
 
 type cookieJar struct {
@@ -309,4 +315,58 @@ func (j *cookieJar) Cookies(_ *url.URL) []*http.Cookie {
 		out = append(out, c)
 	}
 	return out
+}
+
+func TestStaticAssetsAndSPAServed(t *testing.T) {
+	st := newSt(t, "web3")
+	rl := relay.NewServer()
+	ws := New(rl, st, webauth.NewSigner("k3"))
+	ts := httptest.NewServer(prodMux(rl, ws))
+	defer ts.Close()
+	cl := &http.Client{Jar: newJar(),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+
+	// 未認証 / → /login へ
+	r, _ := cl.Get(ts.URL + "/")
+	if r.StatusCode != 302 || r.Header.Get("Location") != "/login" {
+		t.Fatalf("未認証 / が /login へ誘導しない: %d %s",
+			r.StatusCode, r.Header.Get("Location"))
+	}
+	r, _ = cl.Get(ts.URL + "/login")
+	if !bodyHas(r, `action="/auth/code"`) {
+		t.Fatal("login にコード入力フォームが無い")
+	}
+	// 認証
+	code := "SPASERV1"
+	st.CreatePairing(context.Background(), webauth.HashCode(code),
+		"PCZ", "PCZ", 10*time.Minute)
+	cl.PostForm(ts.URL+"/auth/code", url.Values{"code": {code}})
+	// 認証後 / は xterm SPA
+	r, _ = cl.Get(ts.URL + "/")
+	if r.StatusCode != 200 || !bodyHas(r, "/static/xterm.js") {
+		t.Fatalf("認証後 / が xterm SPA でない: %d", r.StatusCode)
+	}
+	// 自前ファイル（非圧縮）は内容で、固定版 xterm.js は実体サイズで検証
+	for _, a := range []struct{ p, want string }{
+		{"/static/xterm.css", ".xterm"},
+		{"/static/addon-fit.js", "FitAddon"},
+		{"/static/app.js", "WebSocket"},
+	} {
+		rr, err := cl.Get(ts.URL + a.p)
+		if err != nil || rr.StatusCode != 200 {
+			t.Fatalf("%s が 200 でない: %v", a.p, rr)
+		}
+		if !bodyHas(rr, a.want) {
+			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
+		}
+	}
+	rr, err := cl.Get(ts.URL + "/static/xterm.js")
+	if err != nil || rr.StatusCode != 200 {
+		t.Fatalf("/static/xterm.js が 200 でない: %v", rr)
+	}
+	if n := bodyLen(rr); n < 100000 { // 固定版 xterm@5.3.0 は ~283KB
+		t.Fatalf("/static/xterm.js が実体でない（%d bytes）", n)
+	}
 }

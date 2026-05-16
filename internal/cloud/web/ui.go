@@ -1,6 +1,7 @@
 package web
 
-// M7b は最小 HTML（動作確認用）。M7c で xterm.js SPA に差し替える。
+// loginHTML はコード入力。appHTML は xterm.js 端末 SPA（M7c）。
+// アセットは internal/cloud/web/static を go:embed で /static/ 配信。
 
 const loginHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <title>claude-master</title>
@@ -18,20 +19,28 @@ const loginHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 
 const appHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <title>claude-master</title>
-<body style="font-family:system-ui;margin:24px">
-<h1 style="font-size:18px">claude-master 管理</h1>
-<p id="s">読み込み中…</p>
-<ul id="list"></ul>
-<form method="post" action="/auth/logout"><button>ログアウト</button></form>
-<script>
-fetch('/api/pcs').then(r=>r.json()).then(pcs=>{
-  const pc=(pcs[0]||{}).id; document.getElementById('s').textContent='PC: '+pc;
-  return fetch('/api/sessions?pc='+encodeURIComponent(pc)).then(r=>r.json());
-}).then(ss=>{
-  const ul=document.getElementById('list');
-  (ss||[]).forEach(x=>{const li=document.createElement('li');
-   li.textContent=(x.short_dir||x.key)+'  ['+(x.key||'')+']';ul.appendChild(li);});
-  if(!ss||!ss.length){document.getElementById('s').textContent+='（セッション無し）';}
-}).catch(e=>{document.getElementById('s').textContent='エラー: '+e;});
-</script>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/xterm.css">
+<style>
+ html,body{margin:0;height:100%;background:#0b0b0b;color:#ddd;
+  font-family:system-ui}
+ #bar{padding:6px 12px;background:#161616;display:flex;gap:12px;
+  align-items:center;font-size:13px}
+ #list{padding:16px}#list button{font:14px system-ui;padding:8px 12px;
+  margin:4px 0;cursor:pointer}
+ #term{display:none;position:absolute;top:34px;left:0;right:0;bottom:0}
+ #term-host{width:100%;height:100%}
+ a{color:#7ab}
+</style>
+<body>
+<div id="bar">
+ <b>claude-master</b><span id="title"></span>
+ <span id="stat" style="margin-left:auto"></span>
+ <a href="/auth/logout">logout</a>
+</div>
+<ul id="list">読み込み中…</ul>
+<div id="term"><div id="term-host"></div></div>
+<script src="/static/xterm.js"></script>
+<script src="/static/addon-fit.js"></script>
+<script src="/static/app.js"></script>
 </body></html>`

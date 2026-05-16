@@ -7,7 +7,9 @@ package web
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -15,6 +17,9 @@ import (
 	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/cloud/webauth"
 )
+
+//go:embed static
+var staticFS embed.FS
 
 const cookieName = "cm_session"
 const cookieTTL = 12 * time.Hour
@@ -38,6 +43,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
 	mux.HandleFunc("/ws", s.wsViewer)
+	sub, _ := fs.Sub(staticFS, "static")
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	return mux
 }
 
