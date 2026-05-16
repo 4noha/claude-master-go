@@ -18,9 +18,13 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   - M6 設計確定: wake=Firestore listener（FCM 不採用＝デスクトップ常駐
     向き・near-$0・PC 発 NAT 越え）、データ線=Cloud Run WSS で既存
     RESIZE/SCROLL/frame protocol をトンネル（`internal/client` 再利用・
-    新プロトコル無し）、quiescence(HistoryFlusher)で開閉。M6a WSS relay/
-    M6b Firestore emulator/M6c agent/M6d クラウド実体/M6e 実 GCP。
-    M6a–c ローカル実検証可、M6d 以降は GCP プロジェクト確認後。
+    新プロトコル無し）、quiescence で開閉。
+  - **M6a–d ✅**（実 WSS／gcloud Firestore エミュレータ＝実 API／実
+    PtyProxy＋実録画／display-oracle で全検証。Cloud Functions は
+    viewer 直接 wake 書込で不要化＝簡素化）。コード/デプロイ資材完了。
+  - **M6e 保留**: 実 GCP デプロイ＋実 2PC 結線。対外・課金・要 project
+    確認のためユーザー明示確認後のみ（`deploy/deploy.sh` は引数無しで
+    何もしない誤デプロイ防止ガード付き）。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。

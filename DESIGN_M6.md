@@ -78,15 +78,20 @@ M6a–c は全てローカル（エミュレータ＋ローカル WSS）で先�
 
 ## サブマイルストーン（各々 build＋実検証緑で前進）
 
-- **M6a** WSS relay protocol: relay server + WSS client。実 PtyProxy
+- **M6a ✅** WSS relay protocol: relay server + WSS client。実 PtyProxy
   (実録画)→relay→client を display-oracle 検証（nav/scroll/frame が
   unix socket と同値に WSS で透過）。
-- **M6b** Firestore state: STATUS スキーマ upsert / wake listener を
-  Firestore エミュレータ（実 API）で往復検証。Security Rules 雛形。
-- **M6c** cloud agent: wake→WSS open→unix socket ポンプ→quiescence
-  close をエミュレータ＋ローカル relay＋実録画で end-to-end。
-- **M6d** クラウド実体: Cloud Run relay / Functions / rules / deploy
-  スクリプト。**デプロイは GCP プロジェクト確認後**。
+- **M6b ✅** Firestore state: STATUS upsert(content_hash 差分版)/wake
+  listener を gcloud Firestore エミュレータ（実 API）で往復検証。
+- **M6c ✅** cloud agent: wake→WSS open→unix socket ポンプ→quiescence
+  close をエミュレータ＋ローカル relay＋実録画で end-to-end 検証。
+- **M6d ✅** クラウド実体: Cloud Run relay(`cloud/relay`,Dockerfile)/
+  firestore.rules/deploy.sh（誤デプロイ防止ガード）/CLI `cloud agent`・
+  `cloud attach`（socket_client を WSS 再利用）。Cloud Functions は
+  「viewer が直接 wake doc 書込（rules 認証）」設計で不要化＝簡素化。
+  コード/資材完了。**実 gcloud デプロイは未実施**。
+- **M6e（保留・要確認）** 実 GCP デプロイ＋実 2PC 結線・本番 cutover。
+  対外・課金・要 project_id/region/billing。ユーザー明示確認後のみ。
 - **M6e** 実 GCP 結線・本番 cutover（実 project で 2 PC 間同期実証）。
 
 ## 不変条件（M1–M5 から継承）
