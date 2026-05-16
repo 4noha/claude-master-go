@@ -34,7 +34,8 @@ type VT struct {
 	st    pstate
 	parm  []byte
 	osc   bool
-	csiPv bool // CSI ? プライベート
+	csiPv bool   // CSI ? プライベート
+	pend  []byte // チャンク境界で割れた末尾(不完全 UTF-8)の繰越し
 }
 
 type pstate int
@@ -66,6 +67,10 @@ func blankLine(cols int) []cell { return make([]cell, cols) }
 // Feed は claude 出力バイト列を投入（バイト単位状態機械。pyte と同様
 // 不正/未対応はサイレントスキップ）。
 func (v *VT) Feed(p []byte) {
+	if len(v.pend) > 0 { // 前回末尾の不完全 UTF-8 を前置
+		p = append(append([]byte{}, v.pend...), p...)
+		v.pend = v.pend[:0]
+	}
 	for i := 0; i < len(p); i++ {
 		c := p[i]
 		switch v.st {
@@ -93,7 +98,9 @@ func (v *VT) Feed(p []byte) {
 			case c < 0x20:
 				// 他制御は無視
 			default:
-				v.putByte(p, &i)
+				if v.putByte(p, &i) {
+					return // 末尾不完全 UTF-8 を v.pend に繰越し済
+				}
 			}
 		case stEsc:
 			switch c {
@@ -152,8 +159,9 @@ func (v *VT) Feed(p []byte) {
 	}
 }
 
-// putByte は ground でのUTF-8 1文字を取り出して描画。
-func (v *VT) putByte(p []byte, i *int) {
+// putByte は ground での UTF-8 1文字を取り出して描画。末尾が不完全
+// （チャンク境界で割れた多バイト）なら v.pend に繰越して true を返す。
+func (v *VT) putByte(p []byte, i *int) (incomplete bool) {
 	b := p[*i]
 	var r rune
 	n := 1
@@ -167,21 +175,23 @@ func (v *VT) putByte(p []byte, i *int) {
 	case b>>3 == 0x1e:
 		n = 4
 	default:
-		return // 不正先頭バイト
+		return false // 不正先頭バイト（1 byte スキップ）
 	}
 	if n == 1 {
 		v.draw(r)
-		return
+		return false
 	}
 	if *i+n > len(p) {
-		return // 途中（チャンク境界）。次 Feed で来る前提では落ちるが
-		// resume-burst は一括 feed 想定。M3 で繰越し対応。
+		// チャンク境界で割れた多バイト。末尾を保存し次 Feed で前置。
+		v.pend = append(v.pend[:0], p[*i:]...)
+		return true
 	}
 	r = decodeRune(p[*i : *i+n])
 	*i += n - 1
 	if r != 0 {
 		v.draw(r)
 	}
+	return false
 }
 
 func decodeRune(b []byte) rune {
