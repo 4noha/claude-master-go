@@ -107,3 +107,21 @@ func TestParseNavKey(t *testing.T) {
 		}
 	}
 }
+
+// normalizeHost: 同一 Mac が "Mac-Studio" / "Mac-Studio.local" で二重
+// 登録される実バグの恒久修正。最初の '.' 以降を落とし冪等・空は def。
+func TestNormalizeHostStablePCID(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Mac-Studio.local", "Mac-Studio"}, // mDNS 形 → 短ホスト
+		{"Mac-Studio", "Mac-Studio"},       // 冪等
+		{"host.corp.example.com", "host"},  // DNS ドメインも除去
+		{"  Mac-Studio.local  ", "Mac-Studio"},
+		{"", "fallback"},     // 空 → def
+		{".local", "fallback"}, // 先頭ドット → 空 → def
+	}
+	for _, c := range cases {
+		if got := normalizeHost(c.in, "fallback"); got != c.want {
+			t.Fatalf("normalizeHost(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}

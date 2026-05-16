@@ -55,10 +55,29 @@ func home(p string) string {
 	return filepath.Join(h, p)
 }
 
-// hostnameOr は os.Hostname()（取得不可なら def）。PC_ID 既定値用。
+// normalizeHost は PC_ID 用にホスト名を安定化する。macOS は環境
+// （launchd / ネットワーク / HostName 未設定）により os.Hostname() が
+// "Mac-Studio" だったり "Mac-Studio.local"（mDNS 形）だったり揺れ、
+// 同一マシンが別 PC として二重登録される。最初の '.' 以降（.local や
+// DNS ドメイン）を落とした短ホスト名へ正規化し、前後空白を除去する
+// （冪等: "Mac-Studio"→"Mac-Studio"）。空になれば def。
+func normalizeHost(h, def string) string {
+	h = strings.TrimSpace(h)
+	if i := strings.IndexByte(h, '.'); i >= 0 {
+		h = h[:i]
+	}
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return def
+	}
+	return h
+}
+
+// hostnameOr は os.Hostname() を normalizeHost で安定化（取得不可なら
+// def）。PC_ID 既定値用。明示指定したいときは環境変数 PC_ID で上書き。
 func hostnameOr(def string) string {
-	if h, err := os.Hostname(); err == nil && h != "" {
-		return h
+	if h, err := os.Hostname(); err == nil {
+		return normalizeHost(h, def)
 	}
 	return def
 }

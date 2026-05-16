@@ -242,3 +242,11 @@ PC-A`・`document.title`・`#pos=(2/4)`・JS エラー無し、`‹›`クリッ
 - 稼働中の launchd（monitor / cloud agent）と既存 CLI 経路を壊さない
   （Web は追加・並存。relay 既存 /session は無改変）。
 - SA 鍵・署名鍵はリポジトリ外。ブラウザに GCP 資格情報を渡さない。
+- **PC 識別子（PCID）は安定であること**。`pcs/{pcID}` が PC の一意キー
+  なので PCID が揺れると同一マシンが端末一覧に二重表示される。macOS は
+  環境（launchd/ネットワーク/HostName 未設定）で `os.Hostname()` が
+  `Mac-Studio` ↔ `Mac-Studio.local` と揺れる実バグがあった。
+  `config.normalizeHost` が最初の `.` 以降（.local/DNS ドメイン）を
+  落とし短ホスト名へ正規化（冪等）。明示したい場合は環境変数
+  `PC_ID` で固定。既存の重複 doc は `DeletePC` で掃除（pcs/{id}＋
+  sessions＋wake を削除。一時 `-tags manual` ヘルパで実施・非コミット）。
