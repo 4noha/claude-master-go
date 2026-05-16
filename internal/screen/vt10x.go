@@ -13,24 +13,24 @@ import (
 )
 
 // VT は vt10x の薄いラッパ。可視 buffer をテキスト行で取り出す。
-type VT struct {
+type VT10x struct {
 	t          vt10x.Terminal
 	cols, rows int
 }
 
-func NewVT(cols, rows int) *VT {
-	return &VT{
+func NewVT10x(cols, rows int) *VT10x {
+	return &VT10x{
 		t:    vt10x.New(vt10x.WithSize(cols, rows)),
 		cols: cols, rows: rows,
 	}
 }
 
 // Feed は claude 出力バイトを流し込む。
-func (v *VT) Feed(p []byte) { _, _ = v.t.Write(p) }
+func (v *VT10x) Feed(p []byte) { _, _ = v.t.Write(p) }
 
 // VisibleLines は現在の可視 buffer を行テキストで返す（pyte 側 display_
 // oracle と同じく rstrip。Char==0 は空白扱い）。
-func (v *VT) VisibleLines() []string {
+func (v *VT10x) VisibleLines() []string {
 	out := make([]string, v.rows)
 	for y := 0; y < v.rows; y++ {
 		var b strings.Builder

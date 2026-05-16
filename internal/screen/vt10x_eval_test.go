@@ -42,7 +42,7 @@ func TestVT10xVisibleMatchesPyteOnRealRecording(t *testing.T) {
 	}
 	want := strings.Split(string(exp), "\n")
 
-	v := NewVT(meta.Width, meta.Height)
+	v := NewVT10x(meta.Width, meta.Height)
 	v.Feed(data)
 	got := v.VisibleLines()
 
