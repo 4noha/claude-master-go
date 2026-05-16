@@ -2,13 +2,21 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/tmux"
 )
+
+func dbg(format string, a ...any) {
+	if os.Getenv("CM_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[reconcile] "+format+"\n", a...)
+	}
+}
 
 // remotePalette は PC ごとに割り当てる識別色（読みやすい 8 色）。
 var remotePalette = []string{
@@ -58,15 +66,34 @@ func sessSID(s map[string]any) string {
 func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 	selfPC string, wc WindowCmd) {
 
-	// desired: marker -> (pc,sid,dir)
+	// current: tmux 上のリモート窓（window_id -> start command）
+	// ★ list 失敗を「窓ゼロ」と誤認すると毎周全作成＝runaway。
+	// 取得できない周は **何もせず中止**（fail-safe。idempotent なので
+	// 次の trigger で再試行）。
+	cur, cerr := mgr.MarkedWindows("claude-master cloud attach ")
+	if cerr != nil {
+		dbg("ABORT: tmux list 失敗（作成しない）: %v", cerr)
+		return
+	}
+
+	// desired: marker -> (pc,sid,dir)。Firestore 取得失敗時も中止
+	// （desired を空とみなすと全窓 kill になり破壊的）。
 	type meta struct{ pc, sid, dir string }
 	desired := map[string]meta{}
-	pcs, _ := st.ListPCs(ctx)
+	pcs, perr := st.ListPCs(ctx)
+	if perr != nil {
+		dbg("ABORT: ListPCs 失敗: %v", perr)
+		return
+	}
 	for _, pc := range pcs {
 		if pc == selfPC || pc == "" {
 			continue // 自 PC はローカル監視デーモンの担当
 		}
-		ss, _ := st.ListSessions(ctx, pc)
+		ss, serr := st.ListSessions(ctx, pc)
+		if serr != nil {
+			dbg("ABORT: ListSessions(%s) 失敗: %v", pc, serr)
+			return
+		}
 		for _, s := range ss {
 			sid := sessSID(s)
 			if sid == "" {
@@ -79,9 +106,16 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 			desired[attachMarker(pc, sid)] = meta{pc, sid, dir}
 		}
 	}
+	dbg("desired=%d cur(marked windows)=%d", len(desired), len(cur))
 
-	// current: tmux 上のリモート窓（window_id -> start command）
-	cur := mgr.MarkedWindows("claude-master cloud attach ")
+	// 暴走上限ガード: 既存リモート窓が desired を著しく超えるときは
+	// 新規作成せず自己修復（kill）のみ。万一検出が部分的に壊れても
+	// 窓が無限増殖しない最後の砦。
+	maxWin := len(desired)*3 + 8
+	noCreate := len(cur) > maxWin
+	if noCreate {
+		dbg("CAP: cur=%d > %d → 作成停止し余剰整理のみ", len(cur), maxWin)
+	}
 
 	// desired ごとに、対応する現存窓を集計（0=作成、1=維持、2+=重複→余剰kill）
 	for marker, d := range desired {
@@ -94,13 +128,19 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 		}
 		switch {
 		case len(ids) == 0:
+			if noCreate {
+				dbg("SKIP create（CAP）%s/%s", d.pc, d.sid)
+				continue
+			}
 			id := mgr.NewWindow(shortName(d.dir), wc(d.pc, d.sid, d.dir))
 			mgr.StyleWindowID(id, "fg="+colorFor(d.pc))
+			dbg("CREATE %s/%s -> %s", d.pc, d.sid, id)
 		default:
 			mgr.StyleWindowID(ids[0], "fg="+colorFor(d.pc)) // 1 本維持
 			for _, extra := range ids[1:] {
 				mgr.KillWindowID(extra) // 重複（過去 runaway）を自己修復
 			}
+			dbg("KEEP %s/%s ids=%v", d.pc, d.sid, ids)
 		}
 	}
 	// desired に無い残りはリモートで消えたセッション → kill

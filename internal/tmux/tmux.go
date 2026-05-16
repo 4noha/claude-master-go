@@ -13,11 +13,18 @@ import (
 
 // out は tmux を実行し stdout を trim して返す（Python _tmux）。
 func out(args ...string) string {
+	s, _ := outErr(args...)
+	return s
+}
+
+// outErr は tmux 実行結果とエラーを返す（呼び出し側がエラーと
+// 「正常だが空」を区別する必要があるとき。runaway 防止の要）。
+func outErr(args ...string) (string, error) {
 	b, err := exec.Command("tmux", args...).Output()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(string(b))
+	return strings.TrimSpace(string(b)), nil
 }
 
 // ok は tmux を実行し終了コード 0 か（Python _tmux_ok）。
@@ -125,12 +132,16 @@ func (m *Manager) EnsureCmdWindow(key, base, command string) string {
 // 判定。window_id 一意キーなので同一コマンドの重複窓も別個に列挙でき、
 // runaway で増えた重複窓を検出・自己修復できる。in-process マップに
 // 依存せず agent 再起動/auto-rename に強い）。
-func (m *Manager) MarkedWindows(needle string) map[string]string {
-	o := out("list-windows", "-t", m.Session, "-F",
+func (m *Manager) MarkedWindows(needle string) (map[string]string, error) {
+	o, err := outErr("list-windows", "-t", m.Session, "-F",
 		"#{window_id}\t#{pane_start_command}")
 	res := map[string]string{}
+	if err != nil {
+		// list 失敗を「窓ゼロ」と誤認させない（runaway 防止の核心）
+		return nil, err
+	}
 	if o == "" {
-		return res
+		return res, nil
 	}
 	for _, ln := range strings.Split(o, "\n") {
 		i := strings.IndexByte(ln, '\t')
@@ -142,7 +153,7 @@ func (m *Manager) MarkedWindows(needle string) map[string]string {
 			res[id] = cmd // window_id をキー（重複窓も別エントリ）
 		}
 	}
-	return res
+	return res, nil
 }
 
 // NewWindow は窓を作って window_id(@N) を返す。auto-rename を切り

@@ -25,7 +25,8 @@ func testWC(pc, sid, dir string) string {
 }
 
 func remoteWinCount(mgr *tmux.Manager) int {
-	return len(mgr.MarkedWindows("claude-master cloud attach "))
+	mw, _ := mgr.MarkedWindows("claude-master cloud attach ")
+	return len(mw)
 }
 
 func TestReconcileRemoteStatelessNoDuplicate(t *testing.T) {
@@ -100,7 +101,8 @@ func TestReconcileRemoteStatelessNoDuplicate(t *testing.T) {
 	}
 
 	// PC 別識別色が実 tmux per-window option に入っている
-	for id := range mgr.MarkedWindows("claude-master cloud attach ") {
+	mwc, _ := mgr.MarkedWindows("claude-master cloud attach ")
+	for id := range mwc {
 		so, _ := exec.Command("tmux", "show-options", "-w", "-t",
 			tsession+":"+id, "window-status-style").CombinedOutput()
 		if !strings.Contains(string(so), colorFor("remoteA")) {
@@ -144,5 +146,39 @@ func TestWatchSessionsPush(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ctx cancel で WatchSessions が戻らない")
+	}
+}
+
+// fail-safe: tmux list が失敗する周は窓を作らない（runaway 真因の修正）。
+func TestReconcileAbortsOnTmuxListError(t *testing.T) {
+	if err := tmux.CheckTmux(); err != nil {
+		t.Skipf("tmux 不在: %v", err)
+	}
+	ctx := context.Background()
+	ra, _ := state.New(ctx, projectID, "remoteB")
+	defer ra.Close()
+	ra.RegisterPC(ctx)
+	ra.PushStatus(ctx, []map[string]any{
+		{"key": "rb1", "session_id": "rb1", "short_dir": "p", "is_active": true,
+			"pid": float64(1), "cwd": "/a", "start_time": "x",
+			"cpu_percent": float64(0), "mem_mb": float64(0)}})
+	me, _ := state.New(ctx, projectID, "this-pc2")
+	defer me.Close()
+	me.RegisterPC(ctx)
+
+	// 存在しない tmux セッション → list-windows がエラー
+	miss := "cm-noexist-" + strconv.Itoa(os.Getpid())
+	mgr, err := tmux.NewManager(miss)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer exec.Command("tmux", "kill-session", "-t", miss).Run()
+	if _, e := mgr.MarkedWindows("x"); e == nil {
+		t.Fatal("不在セッションの MarkedWindows がエラーを返さない")
+	}
+	// fail-safe: 作成されない（セッションも作られない）
+	ReconcileRemote(ctx, me, mgr, "this-pc2", testWC)
+	if exec.Command("tmux", "has-session", "-t", miss).Run() == nil {
+		t.Fatal("list 失敗周なのに窓/セッションを作成した（runaway 未修正）")
 	}
 }
