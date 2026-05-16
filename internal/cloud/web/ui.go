@@ -55,7 +55,13 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <main>
  <p style="color:#9aa;font-size:13px">アカウントに接続されている端末です。
   セッションの「Web ターミナルを開く」から Web インターフェースに接続します。</p>
- <div id="devices"></div>
+ <button id="addbtn" style="padding:8px 14px;font:14px system-ui;
+  background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer">
+  ＋ 端末を追加</button>
+ <pre id="enroll" style="display:none;white-space:pre-wrap;background:#17171b;
+  border:1px solid #2a2a30;border-radius:8px;padding:12px;margin-top:12px;
+  color:#cde;font-size:12px"></pre>
+ <div id="devices" style="margin-top:8px"></div>
 </main>
 <script src="/static/devices.js"></script>
 </body></html>`

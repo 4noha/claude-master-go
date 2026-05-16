@@ -54,4 +54,34 @@ async function main() {
     if (e.message !== "unauth") $("stat").textContent = "エラー: " + e.message;
   }
 }
+
+// 端末を追加: enroll コード発行 → 新 PC で実行するコマンドを表示
+function setupAdd() {
+  const btn = $("addbtn"), out = $("enroll");
+  if (!btn) return;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await fetch("/api/enroll", {
+        method: "POST", headers: { Accept: "application/json" },
+      });
+      if (!r.ok) throw new Error("発行失敗 " + r.status);
+      const j = await r.json();
+      out.style.display = "block";
+      out.textContent =
+        "新しい PC で claude-master を用意し、以下を実行してください" +
+        "（" + (j.expires_in || "15m") + "・一回限り）:\n\n" +
+        j.command +
+        "\n\n完了後その PC で `claude-master cloud agent` を起動すると" +
+        "この一覧に表示されます。";
+    } catch (e) {
+      out.style.display = "block";
+      out.textContent = "エラー: " + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
 main();
+setupAdd();

@@ -13,10 +13,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -251,15 +254,22 @@ func resolveSock(cfg *config.Config) func(string) (string, bool) {
 
 // runCloud: claude-master cloud {agent|attach <sid> [--pc <PC>]}
 func runCloud(args []string) {
-	cfg := config.Load()
-	if cfg.GCPProject == "" {
-		fmt.Fprintln(os.Stderr,
-			"cloud 無効: GCP_PROJECT 未設定（DESIGN_M6.md 参照）")
-		os.Exit(2)
-	}
 	sub := ""
 	if len(args) > 0 {
 		sub = args[0]
+	}
+	// enroll は「未設定の新 PC」が設定を受け取る入口なので
+	// GCP_PROJECT ガードより前で処理する。
+	if sub == "enroll" {
+		runCloudEnroll(args[1:])
+		return
+	}
+	cfg := config.Load()
+	if cfg.GCPProject == "" {
+		fmt.Fprintln(os.Stderr,
+			"cloud 無効: GCP_PROJECT 未設定（Web の『端末を追加』→ "+
+				"`claude-master cloud enroll <code>` で設定可）")
+		os.Exit(2)
 	}
 	switch sub {
 	case "agent":
@@ -268,9 +278,104 @@ func runCloud(args []string) {
 		runCloudAttach(cfg, args[1:])
 	default:
 		fmt.Fprintln(os.Stderr,
-			"usage: claude-master cloud {agent|attach <sid> [--pc <PC>]}")
+			"usage: claude-master cloud {agent|attach <sid> [--pc <PC>]|enroll <code>}")
 		os.Exit(2)
 	}
+}
+
+// runCloudEnroll: Web で発行した enroll コードを relay と交換し、
+// SA 鍵と設定（GCP_PROJECT/CLOUD_RELAY_URL）を自動配置する。
+// 使い方: claude-master cloud enroll <code> --relay wss://<host>
+func runCloudEnroll(args []string) {
+	var code, relay string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--relay":
+			if i+1 < len(args) {
+				relay = args[i+1]
+				i++
+			}
+		default:
+			if code == "" {
+				code = args[i]
+			}
+		}
+	}
+	if code == "" || relay == "" {
+		fmt.Fprintln(os.Stderr,
+			"usage: claude-master cloud enroll <code> --relay wss://<host>")
+		os.Exit(2)
+	}
+	httpBase := strings.Replace(strings.Replace(relay,
+		"wss://", "https://", 1), "ws://", "http://", 1)
+	resp, err := http.PostForm(httpBase+"/enroll", url.Values{"code": {code}})
+	if err != nil {
+		exitErr(fmt.Errorf("enroll 接続失敗: %w", err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		exitErr(fmt.Errorf("enroll 失敗(%d): コードが無効か期限切れ", resp.StatusCode))
+	}
+	var b struct {
+		GCPProject string `json:"gcp_project"`
+		RelayURL   string `json:"relay_url"`
+		SAJSON     string `json:"sa_json"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		exitErr(fmt.Errorf("enroll 応答解析失敗: %w", err))
+	}
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".claude-master")
+	_ = os.MkdirAll(dir, 0o755)
+	saPath := ""
+	if b.SAJSON != "" {
+		saPath = filepath.Join(dir, "sa.json")
+		if err := os.WriteFile(saPath, []byte(b.SAJSON), 0o600); err != nil {
+			exitErr(fmt.Errorf("SA 鍵書込失敗: %w", err))
+		}
+	}
+	relayURL := b.RelayURL
+	if relayURL == "" {
+		relayURL = relay
+	}
+	if err := writeTomlKeys(filepath.Join(home, ".claude-master.toml"),
+		map[string]string{
+			"GCP_PROJECT":     b.GCPProject,
+			"CLOUD_RELAY_URL": relayURL,
+		}); err != nil {
+		exitErr(fmt.Errorf("設定書込失敗: %w", err))
+	}
+	fmt.Println("端末を登録しました（このアカウントに参加）。")
+	fmt.Printf("  GCP_PROJECT=%s\n  CLOUD_RELAY_URL=%s\n", b.GCPProject, relayURL)
+	if saPath != "" {
+		fmt.Printf("  認証鍵: %s\n", saPath)
+	}
+	fmt.Println("次: `claude-master cloud agent` を起動（常駐化推奨）。" +
+		"proxy/monitor も同 PC で動かすと端末一覧にセッションが出ます。")
+}
+
+// writeTomlKeys は既存 toml の同名キー行を置換し、無ければ追記する
+// （他キーは保持。値は文字列としてクォート）。
+func writeTomlKeys(path string, kv map[string]string) error {
+	var lines []string
+	if b, err := os.ReadFile(path); err == nil {
+		for _, ln := range strings.Split(string(b), "\n") {
+			drop := false
+			for k := range kv {
+				t := strings.TrimSpace(ln)
+				if strings.HasPrefix(t, k+" ") || strings.HasPrefix(t, k+"=") {
+					drop = true
+				}
+			}
+			if !drop && strings.TrimSpace(ln) != "" {
+				lines = append(lines, ln)
+			}
+		}
+	}
+	for k, v := range kv {
+		lines = append(lines, fmt.Sprintf("%s = %q", k, v))
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 func runCloudAgent(cfg *config.Config) {

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -134,7 +135,8 @@ func (f fakeGV) Verify(_ context.Context, _, _ string) (string, bool, error) {
 func newWeb(t *testing.T, st *state.Client, gv webauth.GoogleVerifier) (*Server, *httptest.Server) {
 	t.Helper()
 	rl := relay.NewServer()
-	ws := New(rl, st, webauth.NewSigner("test-key"), "test-cid", allowEmail, gv)
+	ws := New(rl, st, webauth.NewSigner("test-key"), "test-cid", allowEmail, gv,
+		"demo-cm", `{"type":"service_account","fake":true}`)
 	ts := httptest.NewServer(prodMux(rl, ws))
 	t.Cleanup(ts.Close)
 	return ws, ts
@@ -415,4 +417,54 @@ func (j *cookieJar) Cookies(_ *url.URL) []*http.Cookie {
 		out = append(out, c)
 	}
 	return out
+}
+
+func TestEnrollFlowRealFirestore(t *testing.T) {
+	st := newSt(t, "enr")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+
+	// 未認証 /api/enroll → 401
+	if r, _ := http.Post(ts.URL+"/api/enroll", "", nil); r.StatusCode != 401 {
+		t.Fatalf("未認証 /api/enroll が 401 でない: %d", r.StatusCode)
+	}
+	// cookie 付き /api/enroll → code+command
+	req, _ := http.NewRequest("POST", ts.URL+"/api/enroll", nil)
+	req.Header.Set("Cookie", ck)
+	r, err := http.DefaultClient.Do(req)
+	if err != nil || r.StatusCode != 200 {
+		t.Fatalf("/api/enroll が 200 でない: %v %v", err, r)
+	}
+	var iss struct{ Code, Command string }
+	body := bodyStr(r)
+	_ = json.Unmarshal([]byte(body), &iss)
+	if iss.Code == "" || !strings.Contains(iss.Command, "cloud enroll "+iss.Code) ||
+		!strings.Contains(iss.Command, "--relay ws") {
+		t.Fatalf("/api/enroll 応答が想定外: %s", body)
+	}
+
+	// 誤コードで /enroll → 401
+	if r := postForm(ts.URL+"/enroll", "code", "BADCODE99"); r.StatusCode != 401 {
+		t.Fatalf("誤 enroll コードが 401 でない: %d", r.StatusCode)
+	}
+	// 正コードで /enroll → bootstrap（project/relay/sa_json）
+	r = postForm(ts.URL+"/enroll", "code", iss.Code)
+	if r.StatusCode != 200 {
+		t.Fatalf("正 enroll が 200 でない: %d", r.StatusCode)
+	}
+	eb := bodyStr(r)
+	if !strings.Contains(eb, `"gcp_project":"demo-cm"`) ||
+		!strings.Contains(eb, `"relay_url":"ws`) ||
+		!strings.Contains(eb, `"sa_json"`) {
+		t.Fatalf("/enroll bootstrap が想定外: %s", eb)
+	}
+	// 一回消費: 同コード再交換は 401
+	if r := postForm(ts.URL+"/enroll", "code", iss.Code); r.StatusCode != 401 {
+		t.Fatalf("消費済 enroll コードが再利用できた: %d", r.StatusCode)
+	}
+}
+
+func postForm(u, k, v string) *http.Response {
+	r, _ := http.PostForm(u, url.Values{k: {v}})
+	return r
 }

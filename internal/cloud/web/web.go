@@ -30,18 +30,22 @@ const cookieTTL = 12 * time.Hour
 const accountScope = "*" // 全 PC（アカウント）スコープ
 
 type Server struct {
-	rl       *relay.Server
-	st       *state.Client
-	signer   *webauth.Signer
-	clientID string          // Google OAuth Web Client ID
-	allowed  map[string]bool // ログイン許可メール（小文字）
-	gv       webauth.GoogleVerifier
+	rl         *relay.Server
+	st         *state.Client
+	signer     *webauth.Signer
+	clientID   string          // Google OAuth Web Client ID
+	allowed    map[string]bool // ログイン許可メール（小文字）
+	gv         webauth.GoogleVerifier
+	gcpProject string // enroll が新 PC へ渡す GCP プロジェクト
+	enrollSA   string // enroll が新 PC へ渡す SA 鍵 JSON（env 由来・任意）
 }
 
 // New は Google ログイン版。allowedEmails はカンマ区切り、gv が nil なら
-// 本番 idtoken 検証器。
+// 本番 idtoken 検証器。gcpProject/enrollSA は端末追加(enroll)で新 PC へ
+// 配布するブートストラップ（enrollSA 未設定なら enroll は config のみ返す）。
 func New(rl *relay.Server, st *state.Client, signer *webauth.Signer,
-	clientID, allowedEmails string, gv webauth.GoogleVerifier) *Server {
+	clientID, allowedEmails string, gv webauth.GoogleVerifier,
+	gcpProject, enrollSA string) *Server {
 	am := map[string]bool{}
 	for _, e := range strings.Split(allowedEmails, ",") {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
@@ -52,7 +56,8 @@ func New(rl *relay.Server, st *state.Client, signer *webauth.Signer,
 		gv = webauth.DefaultGoogleVerifier
 	}
 	return &Server{rl: rl, st: st, signer: signer,
-		clientID: clientID, allowed: am, gv: gv}
+		clientID: clientID, allowed: am, gv: gv,
+		gcpProject: gcpProject, enrollSA: enrollSA}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -65,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
 	mux.HandleFunc("/api/devices", s.apiGuard(s.apiDevices))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
+	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll)) // 端末追加コード発行
+	mux.HandleFunc("/enroll", s.enroll)                    // 新 PC が code 交換
 	mux.HandleFunc("/ws", s.wsViewer)
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
@@ -242,6 +249,78 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request, t webauth.T
 		ss = []map[string]any{}
 	}
 	json.NewEncoder(w).Encode(ss)
+}
+
+func relayWSS(r *http.Request) string {
+	if isHTTPS(r) {
+		return "wss://" + r.Host
+	}
+	return "ws://" + r.Host
+}
+
+// apiEnroll: ログイン中のアカウントに端末を追加するための一回限り
+// enroll コードを発行（cookie 必須＝アカウント所有者のみ）。新 PC で
+// 表示コマンドを実行すると enroll で交換される。
+func (s *Server) apiEnroll(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	code, err := webauth.GenCode()
+	if err != nil {
+		http.Error(w, `{"error":"gen"}`, http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	// scope="enroll" として 15 分・一回消費（pairing プリミティブ再利用）
+	if err := s.st.CreatePairing(ctx, webauth.HashCode(code),
+		"", "enroll", 15*time.Minute); err != nil {
+		http.Error(w, `{"error":"store"}`, http.StatusInternalServerError)
+		return
+	}
+	cmd := "claude-master cloud enroll " + code +
+		" --relay " + relayWSS(r)
+	json.NewEncoder(w).Encode(map[string]any{
+		"code": code, "command": cmd, "expires_in": "15m",
+	})
+}
+
+// enroll: 新 PC が enroll コードを交換してブートストラップを取得
+// （無認証＝コードが機密・一回消費・短 TTL）。relay/project と
+// （設定時のみ）SA 鍵 JSON を返す。これにより新 PC は鍵の手動配布
+// なしでアカウントに参加できる。
+func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST のみ", http.StatusMethodNotAllowed)
+		return
+	}
+	code := r.FormValue("code")
+	if code == "" {
+		var b struct{ Code string `json:"code"` }
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		code = b.Code
+	}
+	if code == "" {
+		http.Error(w, "code が必要", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	_, scope, ok, err := s.st.ConsumePairing(ctx, webauth.HashCode(code))
+	if err != nil {
+		http.Error(w, "enroll 処理エラー", http.StatusInternalServerError)
+		return
+	}
+	if !ok || scope != "enroll" {
+		http.Error(w, "コードが無効か期限切れです", http.StatusUnauthorized)
+		return
+	}
+	resp := map[string]any{
+		"gcp_project": s.gcpProject,
+		"relay_url":   relayWSS(r),
+	}
+	if s.enrollSA != "" {
+		resp["sa_json"] = s.enrollSA
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // wsViewer: 認証済ブラウザの端末接続。cookie 検証→スコープ確認→

@@ -36,7 +36,7 @@ func handler() http.Handler {
 			log.Printf("web 無効（Firestore 接続失敗）: %v", err)
 		} else {
 			ws := web.New(rl, st, webauth.NewSigner(key),
-				clientID, allowed, nil)
+				clientID, allowed, nil, proj, os.Getenv("ENROLL_SA_JSON"))
 			mux.Handle("/", ws.Handler()) // /,/login,/auth/google,/api,/ws
 			log.Printf("web 管理 UI 有効（project=%s, allow=%s）", proj, allowed)
 			return mux
