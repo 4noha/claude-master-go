@@ -129,6 +129,30 @@ agent⇄unix socket⇄PtyProxy（バイト透過・xterm.js が描画）。
   TLS。共有 SA を配布する personal 前提（将来 relay 仲介＝鍵不送付の
   Option B で更に堅牢化可能）。
 
+## M7i: dashboard へ外部セッション併合 ＋ 管理外 claude のタブ抑止
+
+要望「tmux の dashboard に外部のセッションも載せる」「claude-master で
+起動していない claude プロセスのタブは表示しない」。
+
+- **外部セッション併合（疎結合・追加 Firestore 読み無し）**: cloud agent の
+  `ReconcileRemote` が既に取得済みの他 PC セッションを
+  `<SessionsDir>/remote_sessions.json`（`config.RemoteFile`）へ原子的
+  （tmp→rename）に書く（`agent.SnapshotPath`、cloud agent 起動時のみ設定。
+  テストは未設定＝no-op）。monitor の `Dashboard()` が STATUS_FILE と
+  **独立**に同ファイルを読み `data["remote"]` へ併合、`RenderDashboard`
+  が「リモート（他 PC）」節（`PC名 ↗short_dir [sid8]`）を追加。monitor↔
+  cloud agent はファイル経由のまま疎結合。エラー時は snapshot を上書き
+  しない（部分/空で消さない fail-safe）。
+- **管理外タブ抑止**: `monitor.managedOnly` が `<pid>.sock`（＝
+  claude-master proxy 経由起動の証跡）を持つセッションだけに絞り、
+  `RunLoop`/`SyncOnce` はそれ以外のタブを作らない（旧 socket 無し＝
+  対話シェル窓ブランチは廃止）。素の `claude` は管理外として無視。
+- 検証: 実 socket ファイル＋実 tmux で `managedOnly`／実 schema で
+  リモート節描画・枠幅不変（`TestManagedOnlyFiltersSocketless`/
+  `TestRenderDashboardRemoteSection`）。稼働 launchd で実 dashboard が
+  ローカル 1＋リモート 8（実 PC D24WT27C3J）を描画、残存 socket 無し窓も
+  除去を実機確認。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。

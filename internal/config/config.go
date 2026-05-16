@@ -41,6 +41,7 @@ type Config struct {
 	RealClaude  string // 本物の claude バイナリ（proxy がラップする対象）
 	SessionsDir string // <pid>.sock / <pid>.status.json の置き場
 	PendingFile string // 再開スケジュール永続化（monitor 再起動跨ぎ）
+	RemoteFile  string // cloud agent が書く他 PC セッション一覧（dashboard 用）
 	// M6 クラウド同期（未設定なら cloud 機能はオプトイン無効）
 	GCPProject    string // Firestore プロジェクト ID
 	PCID          string // この PC の識別子（既定 hostname）
@@ -132,6 +133,7 @@ func Load() *Config {
 		RealClaude:  str("REAL_CLAUDE", home(".local/bin/claude")),
 		SessionsDir: home(".claude-master/sessions"),
 		PendingFile: home(".claude-master/pending_resumes.json"),
+		RemoteFile:  home(".claude-master/sessions/remote_sessions.json"),
 
 		GCPProject:     str("GCP_PROJECT", ""),
 		PCID:           str("PC_ID", hostnameOr("pc")),

@@ -72,6 +72,22 @@ func WriteStatus(cfg *config.Config, mgr *tmux.Manager, sessions []scanner.Claud
 	return os.WriteFile(cfg.StatusFile, b, 0o644)
 }
 
+// managedOnly は claude-master の proxy 経由で起動したセッション
+// （<pid>.sock を持つ）だけに絞る。proxy を介さない素の `claude` は
+// claude-master 管理外なので tmux タブも dashboard も作らない
+// （ユーザー要望「claude-master で起動していない claude プロセスの
+// タブは表示しない」）。socket は proxy が claude 起動直後に作るので
+// 立ち上げ直後 1 周だけ漏れることがあるが次周で拾う（許容）。
+func managedOnly(cfg *config.Config, ss []scanner.ClaudeSession) []scanner.ClaudeSession {
+	out := make([]scanner.ClaudeSession, 0, len(ss))
+	for _, s := range ss {
+		if _, err := os.Stat(sockPathFor(cfg, s.Pid)); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // SyncOnce は 1 回分の差分同期: 新規キー→AddWindow、消失キー→
 // RemoveWindow（Python run_loop ループ本体の tmux 部分と同一）。
 // 更新後の current（key→session）を返す。
@@ -79,6 +95,7 @@ func SyncOnce(cfg *config.Config, mgr *tmux.Manager,
 	known map[string]scanner.ClaudeSession,
 	sessions []scanner.ClaudeSession) map[string]scanner.ClaudeSession {
 
+	sessions = managedOnly(cfg, sessions) // 管理外 claude はタブを作らない
 	current := map[string]scanner.ClaudeSession{}
 	for _, s := range sessions {
 		current[s.Key()] = s
@@ -87,11 +104,7 @@ func SyncOnce(cfg *config.Config, mgr *tmux.Manager,
 		if _, ok := known[key]; ok {
 			continue
 		}
-		sock := sockPathFor(cfg, s.Pid)
-		if _, err := os.Stat(sock); err != nil {
-			sock = "" // socket 無し＝対話シェル window
-		}
-		mgr.AddWindow(s, sock)
+		mgr.AddWindow(s, sockPathFor(cfg, s.Pid)) // 管理対象＝socket あり
 	}
 	for key := range known {
 		if _, ok := current[key]; !ok {
@@ -192,17 +205,14 @@ func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 	}
 	for {
 		sessions, _ := scanner.Scan(false)
+		sessions = managedOnly(cfg, sessions) // 管理外 claude はタブ非生成
 		current := map[string]scanner.ClaudeSession{}
 		for _, s := range sessions {
 			current[s.Key()] = s
 		}
 		for key, s := range current {
 			if _, ok := known[key]; !ok {
-				sock := sockPathFor(cfg, s.Pid)
-				if _, err := os.Stat(sock); err != nil {
-					sock = ""
-				}
-				mgr.AddWindow(s, sock)
+				mgr.AddWindow(s, sockPathFor(cfg, s.Pid))
 				continue
 			}
 			status := readSessionStatus(cfg, s.Pid)
@@ -456,7 +466,30 @@ func RenderDashboard(data map[string]any, w int, gitMsg string) string {
 			lines = append(lines, "║  "+ljust(sub, W-4)+"║")
 		}
 	}
+	// 外部 PC のセッション（cloud agent の snapshot を Dashboard が
+	// data["remote"] に併合）。ローカルとは別セクションで列挙する。
+	remote, _ := data["remote"].([]any)
+	if len(remote) > 0 {
+		lines = append(lines,
+			"╠"+strings.Repeat("─", W-2)+"╣",
+			"║"+center(" リモート（他 PC）", W-2)+"║",
+			"╠"+strings.Repeat("─", W-2)+"╣")
+		for _, rv := range remote {
+			r, _ := rv.(map[string]any)
+			pc := runeCut(jstr(r, "pc"), 16)
+			dir := jstr(r, "short_dir")
+			sid := runeCut(jstr(r, "session_id"), 8)
+			row := ljust(pc, 16) + "  ↗" + dir
+			if sid != "" {
+				row += "  [" + sid + "]"
+			}
+			lines = append(lines, "║ "+ljust(runeCut(row, W-3), W-3)+"║")
+		}
+	}
 	footer := fmt.Sprintf("更新: %s  セッション数: %d", updated, len(sessions))
+	if len(remote) > 0 {
+		footer += fmt.Sprintf("  リモート: %d", len(remote))
+	}
 	if gitMsg != "" {
 		footer += "  ツール: " + gitMsg
 	}
@@ -477,6 +510,15 @@ func Dashboard(cfg *config.Config, done <-chan struct{}, stdout io.Writer) {
 		}
 		if data == nil {
 			data = map[string]any{}
+		}
+		// cloud agent が書く他 PC セッション snapshot を併合（任意・
+		// 無ければリモート節は出ない）。STATUS_FILE と独立ファイルなので
+		// monitor と cloud agent は疎結合のまま。
+		if b, err := os.ReadFile(cfg.RemoteFile); err == nil {
+			var rm map[string]any
+			if json.Unmarshal(b, &rm) == nil {
+				data["remote"] = rm["sessions"]
+			}
 		}
 		fmt.Fprint(stdout, "\x1b[2J\x1b[H")
 		fmt.Fprintln(stdout, RenderDashboard(data, dashMinW, ""))

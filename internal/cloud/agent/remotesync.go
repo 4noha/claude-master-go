@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -10,6 +11,33 @@ import (
 	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/tmux"
 )
+
+// SnapshotPath が非空なら ReconcileRemote が取得した他 PC セッション一覧を
+// この JSON へ書き出す（monitor の dashboard が読んで「外部セッション」を
+// 表示する）。cloud agent 起動時に runCloudAgent が設定。テストは未設定＝
+// no-op なので副作用なし。Firestore 追加読みはせず ReconcileRemote が
+// 既に取得済みのデータを使う（コスト増ゼロ）。
+var SnapshotPath string
+
+// writeSnapshot は remote セッション一覧を SnapshotPath へ原子的に書く
+// （tmp→rename。dashboard が部分書きを読まないように）。失敗は無視
+// （dashboard 表示は付加機能、同期本体を止めない）。
+func writeSnapshot(rows []map[string]any) {
+	if SnapshotPath == "" {
+		return
+	}
+	b, err := json.MarshalIndent(map[string]any{
+		"updated_at": time.Now().Format("2006-01-02 15:04:05"),
+		"sessions":   rows,
+	}, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := SnapshotPath + ".tmp"
+	if os.WriteFile(tmp, b, 0o644) == nil {
+		_ = os.Rename(tmp, SnapshotPath)
+	}
+}
 
 func dbg(format string, a ...any) {
 	if os.Getenv("CM_DEBUG") != "" {
@@ -79,6 +107,7 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 	// （desired を空とみなすと全窓 kill になり破壊的）。
 	type meta struct{ pc, sid, dir string }
 	desired := map[string]meta{}
+	var snap []map[string]any // dashboard 用 他 PC セッション一覧
 	pcs, perr := st.ListPCs(ctx)
 	if perr != nil {
 		dbg("ABORT: ListPCs 失敗: %v", perr)
@@ -103,9 +132,12 @@ func ReconcileRemote(ctx context.Context, st *state.Client, mgr *tmux.Manager,
 				dir = sid
 			}
 			desired[attachMarker(pc, sid)] = meta{pc, sid, dir}
+			snap = append(snap, map[string]any{
+				"pc": pc, "short_dir": dir, "session_id": sid})
 		}
 	}
 	dbg("desired=%d cur(marked windows)=%d", len(desired), len(cur))
+	writeSnapshot(snap) // 全 PC 走査完了後に dashboard 用一覧を更新
 
 	// 暴走上限ガード: 既存リモート窓が desired を著しく超えるときは
 	// 新規作成せず自己修復（kill）のみ。万一検出が部分的に壊れても

@@ -409,6 +409,9 @@ func runCloudAgent(cfg *config.Config) {
 	// （各窓は cloud attach の再接続ループ＝viewer）。
 	if mgr, merr := tmux.NewManager(cfg.TmuxSession); merr == nil {
 		mgr.EnsureSession()
+		// dashboard が「外部 PC のセッション」も出せるよう同期側が
+		// 取得済みの一覧をスナップショット出力（Firestore 追加読み無し）。
+		agent.SnapshotPath = cfg.RemoteFile
 		self, _ := os.Executable()
 		sa := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 		wc := func(pc, sid, dir string) string {

@@ -57,9 +57,13 @@ func TestSyncOnceRealScanRealTmux(t *testing.T) {
 	if err != nil {
 		t.Skipf("scan 不可: %v", err)
 	}
+	// SyncOnce は claude-master 管理（<pid>.sock あり）だけタブ化する。
+	// テスト機に素の claude があっても socket 無しは対象外なので期待値も
+	// managedOnly 後で比較（新仕様: 管理外 claude のタブは作らない）。
+	managed := managedOnly(cfg, sessions)
 	cur := SyncOnce(cfg, mgr, map[string]scanner.ClaudeSession{}, sessions)
-	if len(cur) != len(uniqKeys(sessions)) {
-		t.Fatalf("current 件数不一致: %d != %d", len(cur), len(uniqKeys(sessions)))
+	if len(cur) != len(uniqKeys(managed)) {
+		t.Fatalf("current 件数不一致: %d != %d", len(cur), len(uniqKeys(managed)))
 	}
 	wins := map[string]bool{}
 	for _, w := range mgr.ListWindows() {
@@ -303,6 +307,61 @@ func TestRenderDashboardRealSchema(t *testing.T) {
 	for _, ln := range strings.Split(r, "\n") {
 		if rcount(ln) != 90 {
 			t.Fatalf("実データで枠幅不揃い(%d): %q", rcount(ln), ln)
+		}
+	}
+}
+
+// managedOnly は <pid>.sock を持つ（＝claude-master proxy 経由で起動
+// した）セッションだけ残し、素の claude を除外する（要望「claude-master
+// で起動していない claude プロセスのタブは表示しない」）。実ファイル
+// （SessionsDir に実 socket ファイル）で検証＝合成 stat に頼らない。
+func TestManagedOnlyFiltersSocketless(t *testing.T) {
+	cfg := testCfg(t)
+	if err := os.MkdirAll(cfg.SessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	managedPid, barePid := 424242, 525252
+	sock := filepath.Join(cfg.SessionsDir, strconv.Itoa(managedPid)+".sock")
+	if err := os.WriteFile(sock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := []scanner.ClaudeSession{
+		{Pid: managedPid, Cwd: "/x/managed", SessionID: "aaaa"},
+		{Pid: barePid, Cwd: "/x/bare"}, // socket 無し＝管理外
+	}
+	got := managedOnly(cfg, in)
+	if len(got) != 1 || got[0].Pid != managedPid {
+		t.Fatalf("socket 持ちのみ残るべき: got=%+v", got)
+	}
+}
+
+// RenderDashboard は data["remote"] があれば「リモート（他 PC）」節を
+// PC 名・↗dir 付きで足し、無ければ出さない。枠幅は他行と不変。
+func TestRenderDashboardRemoteSection(t *testing.T) {
+	base := map[string]any{"updated_at": "2026-05-17 12:00:00",
+		"sessions": []any{}}
+	if r := RenderDashboard(base, 90, ""); strings.Contains(r, "リモート") {
+		t.Fatalf("remote 未指定なのにリモート節が出た:\n%s", r)
+	}
+	withR := map[string]any{"updated_at": "2026-05-17 12:00:00",
+		"sessions": []any{},
+		"remote": []any{
+			map[string]any{"pc": "Mac-Studio", "short_dir": "claude-master",
+				"session_id": "deadbeef-1111"},
+		}}
+	r := RenderDashboard(withR, 90, "")
+	if !strings.Contains(r, "リモート（他 PC）") ||
+		!strings.Contains(r, "Mac-Studio") ||
+		!strings.Contains(r, "↗claude-master") ||
+		!strings.Contains(r, "[deadbeef]") {
+		t.Fatalf("リモート節が期待通り描画されない:\n%s", r)
+	}
+	if !strings.Contains(r, "リモート: 1") {
+		t.Fatalf("footer にリモート数が無い:\n%s", r)
+	}
+	for _, ln := range strings.Split(r, "\n") {
+		if rcount(ln) != 90 {
+			t.Fatalf("リモート節で枠幅不揃い(%d): %q", rcount(ln), ln)
 		}
 	}
 }
