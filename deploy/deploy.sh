@@ -44,14 +44,31 @@ echo "==> [4/5] Cloud Build（cloud/relay/Dockerfile）"
 ( cd "$ROOT" && gcloud builds submit --project="$PROJECT" \
     --config deploy/cloudbuild.yaml --substitutions=_IMAGE="$IMG" . )
 
-echo "==> [5/5] Cloud Run デプロイ"
+echo "==> [5/6] Web 用: Cloud Run ランタイム SA に Firestore 権限"
+RSA="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${RSA}" --role="roles/datastore.user" \
+  --condition=None >/dev/null 2>&1 || true
+
+echo "==> [6/6] Cloud Run デプロイ（Web 管理 UI 有効）"
+# WEB_SIGNING_KEY は ~/.claude-master/web_signing_key に固定保持
+# （cookie 署名鍵。再デプロイで変えると既存 cookie が失効）。
+KEYF="$HOME/.claude-master/web_signing_key"
+if [[ ! -s "$KEYF" ]]; then
+  mkdir -p "$HOME/.claude-master"
+  openssl rand -hex 32 > "$KEYF"; chmod 600 "$KEYF"
+fi
+WKEY="$(cat "$KEYF")"
 gcloud run deploy "$SERVICE" --project="$PROJECT" --region="$REGION" \
   --image="$IMG" --min-instances=0 --max-instances=4 \
-  --no-cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080
+  --no-cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080 \
+  --set-env-vars="GCP_PROJECT=${PROJECT},WEB_SIGNING_KEY=${WKEY}"
 
 URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT" \
   --region="$REGION" --format='value(status.url)')"
 echo "==> 完了。relay URL = $URL"
 echo "    export CLOUD_RELAY_URL=\"${URL/https:/wss:}\""
+echo "    Web 管理 UI: ${URL}/login （PC 側 'claude-master cloud pair'"
+echo "    のコードで接続）。署名鍵=${KEYF}（再デプロイでも不変に保つ）"
 echo "    Firestore ルール: deploy/firestore.rules（サーバ SDK は ADC/"
-echo "    SA で rules 非対象。web 等を足すとき firebase deploy で適用）"
+echo "    SA で rules 非対象。ブラウザ直アクセスを足すとき firebase deploy）"

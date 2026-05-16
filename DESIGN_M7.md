@@ -71,15 +71,22 @@ agent⇄unix socket⇄PtyProxy（バイト透過・xterm.js が描画）。
 
 ## サブマイルストーン（各 build＋実検証緑で前進）
 
-- **M7a** 認証コア: `cloud pair` CLI＋Firestore pairing schema＋
-  サーバ verifyCode／cookie 署名・検証。単体＋実 Firestore
-  エミュレータで検証（合成 green 不使用）。
-- **M7b** Web バックエンド: 上記ハンドラを relay main へ統合。
-  httptest＋エミュレータ。Go 製「ブラウザ相当」viewer が /ws→
-  実 PtyProxy(実録画)→display-oracle で protocol 透過を検証。
-- **M7c** フロント SPA＋xterm.js（ベンダリング・最小操作）。
-- **M7d** Cloud Run 再デプロイ＋ chrome-devtools で実ブラウザ
-  e2e（実 GCP: code 入力→一覧→端末に実録画が見える）。
+- **M7a ✅** 認証コア: `cloud pair`＋Firestore pairing＋webauth
+  （code/hash/HMAC cookie）。暗号単体＋実 Firestore エミュレータ。
+- **M7b ✅** Web backend: /login・/auth/code・/api/pcs・/api/sessions・
+  /ws を relay main へ統合。実エミュレータ＋実 relay＋実 PtyProxy
+  (実録画) Go ブラウザ相当 viewer→display-oracle。
+- **M7c ✅** フロント SPA＋固定版 xterm.js を go:embed 配信。実
+  エミュレータ＋本番同型 mux で SPA/静的配信検証。
+- **M7d ✅** Cloud Run 再デプロイ（rev 00003、`GCP_PROJECT`＋
+  `WEB_SIGNING_KEY` env、ランタイム SA に datastore.user）＋
+  **chrome-devtools 実ブラウザ e2e**: 実 Chrome→実 Cloud Run→実
+  Firestore で code 入力→`PC: webe2e`→セッション一覧→端末。xterm DOM
+  に実録画フッター `⏵⏵ bypass permissions … esc to interrupt …` を
+  確認（DOM display-oracle・合成なし）。
+  - 公開 URL: `https://claude-master-relay-demo01-an.a.run.app`
+    （`/login`）。署名鍵 `~/.claude-master/web_signing_key`
+    （リポジトリ外・600・再デプロイ不変）。
 
 ## 不変条件継承
 
