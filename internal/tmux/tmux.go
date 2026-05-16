@@ -3,6 +3,7 @@
 package tmux
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -137,8 +138,11 @@ const remoteOpt = "@cm_remote"
 // 重複窓も別個に列挙＝runaway 重複の自己修復が可能。list 失敗は error を
 // 返し「窓ゼロ」と誤認させない（runaway 防止の核心）。
 func (m *Manager) MarkedWindows() (map[string]string, error) {
+	// 区切りは TAB 不可（tmux -F は非 tty 出力で literal TAB を落とすため
+	// runaway の真因だった）。id=@\d+ / marker="cloud attach …" の双方に
+	// 出現しない印字可能文字 '=' を区切りに使う。
 	o, err := outErr("list-windows", "-t", m.Session, "-F",
-		"#{window_id}\t#{"+remoteOpt+"}")
+		"#{window_id}=#{"+remoteOpt+"}")
 	if err != nil {
 		return nil, err
 	}
@@ -147,12 +151,12 @@ func (m *Manager) MarkedWindows() (map[string]string, error) {
 		return res, nil
 	}
 	for _, ln := range strings.Split(o, "\n") {
-		i := strings.IndexByte(ln, '\t')
+		i := strings.IndexByte(ln, '=')
 		if i < 0 {
 			continue
 		}
 		id, mark := ln[:i], ln[i+1:]
-		if mark != "" {
+		if id != "" && mark != "" {
 			res[id] = mark
 		}
 	}
@@ -163,18 +167,20 @@ func (m *Manager) MarkedWindows() (map[string]string, error) {
 // "claude-master cloud attach" を含む旧 runaway 窓の id を返す
 // （新方式移行後の一掃用。list 失敗は error）。
 func (m *Manager) LegacyAttachWindows() ([]string, error) {
+	// @cm_remote 無し かつ 窓名が "↗"（リモート窓の命名）= set 失敗等の
+	// 取り残し。pane_start_command は '=' を含むので使わず name で判定。
 	o, err := outErr("list-windows", "-t", m.Session, "-F",
-		"#{window_id}\t#{"+remoteOpt+"}\t#{pane_start_command}")
+		"#{window_id}=#{"+remoteOpt+"}=#{window_name}")
 	if err != nil {
 		return nil, err
 	}
 	var ids []string
 	for _, ln := range strings.Split(o, "\n") {
-		p := strings.SplitN(ln, "\t", 3)
+		p := strings.SplitN(ln, "=", 3)
 		if len(p) < 3 {
 			continue
 		}
-		if p[1] == "" && strings.Contains(p[2], "claude-master cloud attach") {
+		if p[1] == "" && strings.HasPrefix(p[2], "↗") {
 			ids = append(ids, p[0])
 		}
 	}
@@ -184,12 +190,18 @@ func (m *Manager) LegacyAttachWindows() ([]string, error) {
 // NewMarkedWindow は窓を作り @cm_remote=marker を付けて window_id を
 // 返す（auto-rename off。marker が確実な在席キーになる）。
 func (m *Manager) NewMarkedWindow(name, command, marker string) string {
-	id := out("new-window", "-t", m.Session, "-n", name, "-P",
+	id, nerr := outErr("new-window", "-t", m.Session, "-n", name, "-P",
 		"-F", "#{window_id}", command)
+	if os.Getenv("CM_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[tmux] new-window id=%q err=%v\n", id, nerr)
+	}
 	if id != "" {
 		t := m.Session + ":" + id
-		out("set-option", "-w", "-t", t, remoteOpt, marker)
-		out("set-option", "-w", "-t", t, "automatic-rename", "off")
+		_, e1 := outErr("set-option", "-w", "-t", t, remoteOpt, marker)
+		_, e2 := outErr("set-option", "-w", "-t", t, "automatic-rename", "off")
+		if os.Getenv("CM_DEBUG") != "" && (e1 != nil || e2 != nil) {
+			fmt.Fprintf(os.Stderr, "[tmux] set-option @cm_remote err=%v automatic err=%v\n", e1, e2)
+		}
 	}
 	return id
 }
