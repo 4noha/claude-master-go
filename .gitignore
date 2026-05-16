@@ -1,0 +1,6 @@
+# build artifacts（配布物は goreleaser/CI で生成、コミットしない）
+/claude-master
+/dist/
+*.test
+*.out
+.DS_Store
