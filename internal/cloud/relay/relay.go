@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -96,6 +97,55 @@ func pump(a, b net.Conn) {
 	<-d
 }
 
+// idlePump は a⇄b を透過中継しつつ、両方向で idle 秒バイトが流れなければ
+// 両 conn を閉じて戻る（= データ線の quiescence 切断）。idle<=0 なら
+// 通常 pump と同じ（無期限）。
+func idlePump(a, b net.Conn, idle time.Duration) {
+	if idle <= 0 {
+		pump(a, b)
+		return
+	}
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	bump := func() { last.Store(time.Now().UnixNano()) }
+	d := make(chan struct{}, 2)
+	cp := func(dst, src net.Conn) {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := src.Read(buf)
+			if n > 0 {
+				bump()
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		d <- struct{}{}
+	}
+	go cp(a, b)
+	go cp(b, a)
+	tick := time.NewTicker(idle / 2)
+	defer tick.Stop()
+	for {
+		select {
+		case <-d:
+			a.Close()
+			b.Close()
+			return
+		case <-tick.C:
+			if time.Since(time.Unix(0, last.Load())) >= idle {
+				a.Close() // 静止 → データ線解放
+				b.Close()
+				<-d
+				return
+			}
+		}
+	}
+}
+
 // Dial は relay へ WSS 接続して net.Conn（バイトストリーム）を返す。
 // baseURL 例: ws://host:port （/session は付けない）。
 func Dial(ctx context.Context, baseURL, sid, role string) (net.Conn, error) {
@@ -123,5 +173,22 @@ func BridgeSource(ctx context.Context, baseURL, sid, unixSock string) error {
 	}
 	defer uc.Close()
 	pump(ws, uc) // unix socket ⇄ WSS をバイト透過
+	return nil
+}
+
+// BridgeSourceIdle は BridgeSource と同じだが、idle 秒 無通信で
+// データ線を閉じて戻る（quiescence 切断＝次の wake まで解放）。
+func BridgeSourceIdle(ctx context.Context, baseURL, sid, unixSock string, idle time.Duration) error {
+	ws, err := Dial(ctx, baseURL, sid, "source")
+	if err != nil {
+		return err
+	}
+	defer ws.Close()
+	uc, err := net.Dial("unix", unixSock)
+	if err != nil {
+		return err
+	}
+	defer uc.Close()
+	idlePump(ws, uc, idle)
 	return nil
 }
