@@ -53,10 +53,22 @@ GCP クラウド同期。
 
 ## マイルストーン（各々 build＆実録画テスト緑で進む）
 
-- **M1 config**: env>toml>default を Python と同値（✅ scaffold 済、要 build 検証）
-- **M2 VT モデル**(山場): 忠実画面モデル + history.top + 先頭アンカー。
-  候補 `hinshun/vt10x` / `charmbracelet/x/vt` / 自前。`resume-burst`
-  バイト列で Python display-oracle と挙動一致を機械検証してから進む。
+- **M1 config**: ✅ 完了。env>toml>default を Python と実 toml で全一致・
+  単体テスト緑・クロスコンパイル検証済。
+- **M2 VT モデル**(山場・進行中): 忠実画面モデル + history.top + 先頭
+  アンカー。**ライブラリ評価を実 resume-burst 録画 vs pyte 既知正で実施し
+  決着**:
+  - `hinshun/vt10x`: 可視 buffer **49/50 忠実**（破損0・入力枠 chrome
+    1行ズレのみ）。だが **scrollback API 無し**。可視のクロスチェック
+    オラクルとして有用。
+  - `charmbracelet/x/vt`: scrollback API はあるが実 claude 出力で
+    **scrollback 0/506・可視 12/50**＝機能せず。**不採用**（依存も除去）。
+  - 結論: **pyte 準拠の自前 VT を実装**（`internal/screen`）。grid+cursor
+    +DECSTBM+autowrap+claude 使用 sequence 部分集合、scroll 時に
+    `pyte.HistoryScreen.index()` と同一意味で最上行を history.top へ。
+    検証オラクル: 実録画の `expected_visible.txt`/`expected_history.txt`
+    （pyte 既知正）に byte 単位一致＋ vt10x 可視で二重チェック。
+    先頭アンカー render は Python 移植。
 - **M3 ptyproxy**: pty fork + raw I/O ループ + unix socket 多重化（最小 mini-tmux）
 - **M4**: nav-mode/PAGEKEY/WHEEL/is_live_reset_key/quiescence 移植
 - **M5**: monitor/tmux 同期
