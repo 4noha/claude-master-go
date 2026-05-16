@@ -108,6 +108,27 @@ agent⇄unix socket⇄PtyProxy（バイト透過・xterm.js が描画）。
   個人専用前提（External/Testing のまま審査・公開不要、リフレッシュ
   トークン不使用で 7 日失効の影響なし）。
 
+- **M7g ✅ Web から端末を追加（enroll）**: ログイン中アカウントの
+  端末一覧に「＋ 端末を追加」。`POST /api/enroll`（cookie 必須）が
+  一回限り・15分の enroll コード＋新 PC 用コマンドを発行（pairing
+  プリミティブ scope="enroll" 再利用）。新 PC は
+  `claude-master cloud enroll <code> --relay wss://…` を実行→
+  `POST /enroll`（無認証＝コードが機密）が ConsumePairing で一回
+  消費し {gcp_project, relay_url, sa_json} を返す→CLI が
+  `~/.claude-master/sa.json`(600) と `~/.claude-master.toml`
+  (GCP_PROJECT/CLOUD_RELAY_URL・既存キー保持マージ) を自動配置。
+  SA 鍵は Cloud Run env `ENROLL_SA_JSON`（無ければ
+  `ENROLL_SA_JSON_B64` を base64 復号＝gcloud --set-env-vars 安全）。
+  enroll は GCP_PROJECT ガードより前で処理（未設定 PC の入口）。
+  検証: 実 Firestore エミュレータで /api/enroll 認可・一回消費を
+  機械検証＋**実 Chrome で「端末を追加」→コード取得→実 relay と
+  `cloud enroll` 交換→sa.json/toml 自動配置を実環境確認**（rev 00006）。
+  既存の起動時 `RegisterPC` で enroll した PC は `cloud agent` 起動で
+  端末一覧に出る。実 Mac-Studio が 4 セッションで一覧表示も確認済。
+  セキュリティ: enroll コードはログイン所有者のみ発行・一回・短 TTL・
+  TLS。共有 SA を配布する personal 前提（将来 relay 仲介＝鍵不送付の
+  Option B で更に堅牢化可能）。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。

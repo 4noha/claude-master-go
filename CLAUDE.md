@@ -57,6 +57,12 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     署名鍵 `~/.claude-master/web_signing_key`/SA 鍵 `~/.claude-master/
     sa.json`（共にリポジトリ外）。個人専用前提＝審査・公開不要。
     別 PC は「ブラウザで公開 URL を開き Google ログイン」だけで接続可。
+    M7g=Web「＋ 端末を追加」: `POST /api/enroll`（所有者のみ）が一回
+    限り enroll コード発行→新 PC で `claude-master cloud enroll <code>
+    --relay wss://…`→`/enroll` が一回消費し sa.json＋設定を自動配置→
+    `cloud agent` 起動で端末一覧に追加。SA 鍵は env ENROLL_SA_JSON /
+    _B64。実 Chrome で「端末を追加」→実 relay 交換→sa.json/toml 配置を
+    実環境検証（rev 00006）。実 Mac-Studio が 4 セッションで一覧表示済。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
