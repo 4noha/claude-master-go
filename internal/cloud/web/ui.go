@@ -74,19 +74,26 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <style>
  html,body{margin:0;height:100%;background:#0b0b0b;color:#ddd;
   font-family:system-ui}
- #bar{padding:6px 12px;background:#161616;display:flex;gap:12px;
+ #bar{padding:6px 12px;background:#161616;display:flex;gap:10px;
   align-items:center;font-size:13px}
  #bar a{color:#7ab;text-decoration:none}
+ #title{font-weight:600;color:#eee}
+ #pos{color:#9aa;font-size:12px}
+ .nav{background:#2a2a30;color:#cde;border:0;border-radius:6px;
+  padding:4px 10px;font-size:14px;cursor:pointer}
+ .nav:disabled{opacity:.35;cursor:default}
  #term{position:absolute;top:34px;left:0;right:0;bottom:0}
  #term-host{width:100%;height:100%}
 </style>
 <body>
 <div id="bar">
- <a href="/">← 端末一覧</a><span id="title"></span>
+ <a href="/">← 一覧</a>
+ <button class="nav" id="prev" title="前のコンソール">‹</button>
+ <span id="title"></span><span id="pos"></span>
+ <button class="nav" id="next" title="次のコンソール">›</button>
  <span id="stat" style="margin-left:auto"></span>
 </div>
 <div id="term"><div id="term-host"></div></div>
 <script src="/static/xterm.js"></script>
-<script src="/static/addon-fit.js"></script>
 <script src="/static/term.js"></script>
 </body></html>`

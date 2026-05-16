@@ -176,6 +176,39 @@ SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テス
 **注意**: 他 PC の終了セッションがこの PC の dashboard から消えるには
 **その PC の cloud agent もこの版へ更新**が必要（producer 側削除のため）。
 
+## M7j: Web コンソール UX（dir 表示／スワイプ切替／サイズ非送信）
+
+要望 3 点を term.js / devices.js / ui.go(termHTML) で実装（relay・
+protocol は無改変＝不変条件死守）。
+
+- **ディレクトリ名表示**: devices.js の /term リンクに `&dir=` を付与、
+  term.js が `qs.get("dir")` をバー（`#title`）と `document.title` に
+  表示（`dir — pc`）。一覧の表示も `short_dir` 基準に統一。
+- **コンソール切替（スワイプ＋‹›）**: term.js が /api/devices＋
+  /api/sessions を一覧ページと同順で平坦化し `[{pc,sid,dir}]` を構築、
+  現在地を (pc,sid) で特定し `#pos` に `(i/n)`。`‹/›` ボタンと
+  左右スワイプ（touchstart/end のΔx>60 かつ |Δx|>|Δy|*1.4、左=次/
+  右=前、巡回）で隣の /term へ location 遷移（WS/xterm はページ遷移で
+  クリーン再接続）。取得失敗時は無効化しターミナルは使用可。
+- **ウィンドウサイズ非送信**: Web は RESIZE フレームを一切送らない
+  受動ビューア。理由＝SIZE_POLICY=client では「最後に resize した
+  client に PTY が追従」するためブラウザ窓が相手 PC の claude/tmux を
+  引きずる。term.js は固定 80x24（proxy 既定 viewport と一致＝表示・
+  カーソル整合）、FitAddon 不使用、resize リスナ無送出。trade-off:
+  モデルが 80x24 超なら Web は左上 80x24 のみ表示（サイズ非送信の
+  必然。ローカル tmux/host を正に保つための意図的選択）。
+
+検証（多層）: ① go test（実 handler＋実 embed FS で served バイトに
+swipe/dir/prev-next の存在＋RESIZE 送出コード `resizeFrame`/`0xff`
+不在を機械検証）② node --check 構文 ③ **実ブラウザ（chrome-devtools）
+ハーネス**: 実 term.js をスタブ WebSocket/Terminal/fetch 上で動かし
+`#title=proj-beta — PC-A`・`document.title`・`#pos=(2/4)`・固定 80x24・
+`__sent`空（サイズ非送信）・JS エラー無しを確認、`‹›`クリックと
+**合成左スワイプ**双方が `/term?pc=PC-B&sid=b1&dir=gamma`（正しい
+隣）へ遷移することを確認 ④ 実デプロイ relay(rev 00008) の
+`/static/term.js` が新版（resizeFrame 0 件）であることを確認。
+全 13 パッケージ緑。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。

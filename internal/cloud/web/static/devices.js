@@ -35,14 +35,14 @@ async function main() {
       } else {
         for (const x of ss) {
           const row = el("div", { className: "s" });
-          const name = (x.short_dir || x.key || "session") +
-            (x.is_active ? "" : "");
-          const lbl = el("span", null, name);
+          const dir = x.short_dir || x.key || "session";
+          const lbl = el("span", null, dir);
           if (x.is_active) lbl.appendChild(el("span", { className: "dot" }, " ●"));
           row.appendChild(lbl);
           const a = el("a", {
             href: "/term?pc=" + encodeURIComponent(d.id) +
-              "&sid=" + encodeURIComponent(x.key),
+              "&sid=" + encodeURIComponent(x.key) +
+              "&dir=" + encodeURIComponent(dir),
           }, "Web ターミナルを開く");
           row.appendChild(a);
           card.appendChild(row);

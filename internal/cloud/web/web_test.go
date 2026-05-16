@@ -275,15 +275,30 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	if !strings.Contains(tb, "/static/xterm.js") || !strings.Contains(tb, "/static/term.js") {
 		t.Fatal("/term が xterm ターミナルでない")
 	}
-	// 静的アセット
+	// /term に前後コンソール切替ボタンがある
+	if !strings.Contains(tb, `id="prev"`) || !strings.Contains(tb, `id="next"`) {
+		t.Fatal("/term にコンソール切替ボタン（prev/next）が無い")
+	}
+	// 静的アセット（ディレクトリ名表示・スワイプ切替の存在も検証）
 	for _, a := range []struct{ p, want string }{
 		{"/static/xterm.css", ".xterm"},
 		{"/static/addon-fit.js", "FitAddon"},
 		{"/static/term.js", "WebSocket"},
+		{"/static/term.js", "touchend"},          // スワイプ切替
+		{"/static/term.js", `qs.get("dir")`},     // ディレクトリ名表示
 		{"/static/devices.js", "/term?pc="},
+		{"/static/devices.js", "&dir="},          // 一覧→term へ dir 受渡し
 	} {
 		if !strings.Contains(bodyStr(do(a.p)), a.want) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
+		}
+	}
+	// Web コンソールは RESIZE を送らない（窓サイズ非送信）。送出コード
+	// （resizeFrame 関数・0xff マジック構築）が無いことを機械検証。
+	tj := bodyStr(do("/static/term.js"))
+	for _, banned := range []string{"resizeFrame", "0xff", "0xFF"} {
+		if strings.Contains(tj, banned) {
+			t.Fatalf("term.js に RESIZE 送出コード %q が残存（窓サイズ非送信のはず）", banned)
 		}
 	}
 	if n := bodyLen(do("/static/xterm.js")); n < 100000 {
