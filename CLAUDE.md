@@ -30,7 +30,17 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     実 Cloud Run＋実 Firestore 経由 e2e（wake→トンネル→display-oracle）
     緑（`go test -tags manual` の `TestE2ERealGCP`）。**`/healthz` は
     GFE 予約で遮断＝ヘルスは `/`**。Python 版に無いクラウド同期を Go で
-    新規達成。`cloud agent` の launchd 常駐化（本番運用化）は別途確認。
+    新規達成。
+  - **cloud agent 常駐化 ✅**: `~/Library/LaunchAgents/
+    com.4noha.claude-master-cloud.plist`（RunAtLoad/KeepAlive、env に
+    GOOGLE_APPLICATION_CREDENTIALS/GCP_PROJECT/CLOUD_RELAY_URL、ログ
+    `~/.claude-master-cloud.log`）。KeepAlive 自動復帰検証済。near-$0
+    維持のため `state.PushStatus` は content_hash 不変時 Firestore 非
+    書込（毎 tick 全書込＋無駄 wake を回避）。停止は
+    `launchctl unload -w …com.4noha.claude-master-cloud.plist`。
+  - 稼働 launchd 2 本: `com.4noha.claude-master`(monitor)/
+    `com.4noha.claude-master-cloud`(cloud agent)。SA 鍵
+    `~/.claude-master/sa.json` はリポジトリ外・600・非コミット。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。

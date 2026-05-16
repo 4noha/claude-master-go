@@ -86,11 +86,12 @@ func (c *Client) PushStatus(ctx context.Context, sessions []map[string]any) (cha
 			pv, _ := d["version"].(int64)
 			ph, _ := d["content_hash"].(string)
 			if ph == h {
-				ver = pv // 差分なし＝据置
-			} else {
-				ver = pv + 1
-				changed++
+				// 差分なし＝Firestore へ書かない（near-$0 維持。毎 tick
+				// Set すると updated_at で常時書込＋無駄 listener wake）。
+				continue
 			}
+			ver = pv + 1
+			changed++
 		} else {
 			changed++
 		}
