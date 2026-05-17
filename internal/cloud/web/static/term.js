@@ -120,7 +120,26 @@ function run() {
     ws.send(resizeFrame(WEB_ROWS, WEB_COLS));
     $("stat").textContent = "接続済";
   };
-  ws.onmessage = (ev) => term.write(new Uint8Array(ev.data));
+  // ページ読込時は最新（ライブ行＝グリッド最下部）が見えるよう、
+  // 初回フレーム描画後に #term-host を一番下までスクロールする
+  // （proxy は最新 N 行を出すので最下部が最新。以後はユーザーの
+  // native スクロール位置を尊重し触らない）。term.write の完了
+  // コールバックでパース後、rAF でレイアウト確定後に実行。
+  let landed = false;
+  const toBottom = () => {
+    const host = $("term-host");
+    host.scrollTop = host.scrollHeight; // 過大値はブラウザが max へ clamp
+  };
+  ws.onmessage = (ev) => {
+    term.write(new Uint8Array(ev.data), () => {
+      if (landed) return;
+      landed = true;
+      // レイアウト確定後（double rAF）＋ xterm の非同期描画が落ち着く
+      // 頃（遅延）に最下部へ。単発 rAF だと早すぎて数十px 足りない。
+      requestAnimationFrame(() => requestAnimationFrame(toBottom));
+      setTimeout(toBottom, 120);
+    });
+  };
   ws.onclose = () => { $("stat").textContent = "切断"; };
   ws.onerror = () => { $("stat").textContent = "エラー"; };
 

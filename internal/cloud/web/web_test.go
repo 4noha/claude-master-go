@@ -298,6 +298,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "scrollback: 0"},  // xterm 自前スクロール無効
 		{"/static/term.js", "WEB_COLS"},       // 固定桁
 		{"/static/term.js", "WEB_ROWS"},       // 固定行（背高グリッド）
+		{"/static/term.js", "scrollHeight"},   // 読込時に最下部へ
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},       // 一覧→term へ dir 受渡し
 	} {
