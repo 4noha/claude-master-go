@@ -105,6 +105,8 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <button class="nav" id="prev" title="前のコンソール">‹</button>
  <span id="title"></span><span id="pos"></span>
  <button class="nav" id="next" title="次のコンソール">›</button>
+ <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
+ <input type="file" accept="image/*" id="imgfile" style="display:none">
  <span id="stat" style="margin-left:auto"></span>
 </div>
 <div id="term"><div id="term-host"></div></div>

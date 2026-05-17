@@ -279,6 +279,11 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	if !strings.Contains(tb, `id="prev"`) || !strings.Contains(tb, `id="next"`) {
 		t.Fatal("/term にコンソール切替ボタン（prev/next）が無い")
 	}
+	// モバイル画像取り込み: 📷 ボタン＋写真ピッカー input
+	if !strings.Contains(tb, `id="img"`) || !strings.Contains(tb, `id="imgfile"`) ||
+		!strings.Contains(tb, `accept="image/*"`) {
+		t.Fatal("/term に画像ボタン/ファイル入力が無い（モバイル経路欠落）")
+	}
 	// 固定論理サイズ＋native スクロール設計の CSS。pull-to-refresh は
 	// document 固定＋overscroll-behavior:none、#term-host は
 	// overscroll-behavior:contain でスクロール連鎖も断つ。native
@@ -299,7 +304,10 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "WEB_COLS"},       // 固定桁
 		{"/static/term.js", "WEB_ROWS"},       // 固定行（背高グリッド）
 		{"/static/term.js", "0xfd"},           // 画像貼付 IMAGE フレーム
-		{"/static/term.js", `"paste"`},        // クリップボード画像捕捉
+		{"/static/term.js", `"paste"`},        // デスクトップ paste 捕捉
+		{"/static/term.js", "sendImageBlob"},  // 画像送信共通化
+		{"/static/term.js", "clipboard.read"}, // モバイル: Clipboard API
+		{"/static/term.js", "imgfile"},        // モバイル: 写真ピッカー fallback
 		{"/static/term.js", "scrollHeight"},   // 読込時スクロール計算
 		{"/static/term.js", "cursorY"},        // ライブ行へ着地（空白回避）
 		{"/static/devices.js", "/term?pc="},

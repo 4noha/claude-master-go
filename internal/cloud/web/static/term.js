@@ -157,40 +157,71 @@ function run() {
     if (ws.readyState === 1) ws.send(enc.encode(d));
   });
 
-  // 画像貼付: ブラウザの paste(⌘V/Ctrl+V) でクリップボード画像を捕捉し
-  // IMAGE フレーム(0xff 0xfd|u32 len|u8 ext|bytes)を proxy へ送る。
-  // proxy がリモートホストのクリップボードへ載せ Ctrl+V 注入で claude
-  // に添付させる（パス文字列では添付不可＝実機確定）。サーバ側
+  // 画像送信: Blob を IMAGE フレーム(0xff 0xfd|u32 len|u8 ext|bytes)で
+  // proxy へ。proxy がリモートホストのクリップボードへ載せ Ctrl+V 注入
+  // で claude に添付（パス文字列では添付不可＝実機確定）。サーバ側
   // WebImagePaste 既定 off の時は無視される。
   const extOf = { "image/png": 1, "image/jpeg": 2, "image/gif": 3 };
+  const sendImageBlob = async (blob) => {
+    if (!blob) return false;
+    const code = extOf[blob.type];
+    if (!code) { $("stat").textContent = "未対応画像形式(" + blob.type + ")"; return false; }
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    if (buf.length === 0 || buf.length > (8 << 20)) {
+      $("stat").textContent = "画像サイズ超過/空"; return false;
+    }
+    const fr = new Uint8Array(7 + buf.length);
+    fr[0] = 0xff; fr[1] = 0xfd;
+    fr[2] = (buf.length >>> 24) & 0xff;
+    fr[3] = (buf.length >>> 16) & 0xff;
+    fr[4] = (buf.length >>> 8) & 0xff;
+    fr[5] = buf.length & 0xff;
+    fr[6] = code;
+    fr.set(buf, 7);
+    if (ws.readyState === 1) {
+      ws.send(fr);
+      $("stat").textContent = "画像を送信（リモートで Ctrl+V 注入）";
+      return true;
+    }
+    return false;
+  };
+
+  // デスクトップ: paste(⌘V/Ctrl+V) で捕捉（モバイルは paste イベントが
+  // 画像を渡さないので下のボタン経路を使う）。
   document.addEventListener("paste", async (e) => {
     const items = (e.clipboardData && e.clipboardData.items) || [];
     for (const it of items) {
       if (it.kind === "file" && it.type.indexOf("image/") === 0) {
-        const code = extOf[it.type];
-        if (!code) { $("stat").textContent = "未対応画像形式"; return; }
         e.preventDefault();
-        const f = it.getAsFile();
-        const buf = new Uint8Array(await f.arrayBuffer());
-        if (buf.length === 0 || buf.length > (8 << 20)) {
-          $("stat").textContent = "画像サイズ超過/空"; return;
-        }
-        const fr = new Uint8Array(7 + buf.length);
-        fr[0] = 0xff; fr[1] = 0xfd;
-        fr[2] = (buf.length >>> 24) & 0xff;
-        fr[3] = (buf.length >>> 16) & 0xff;
-        fr[4] = (buf.length >>> 8) & 0xff;
-        fr[5] = buf.length & 0xff;
-        fr[6] = code;
-        fr.set(buf, 7);
-        if (ws.readyState === 1) {
-          ws.send(fr);
-          $("stat").textContent = "画像を送信（リモートで Ctrl+V 注入）";
-        }
+        await sendImageBlob(it.getAsFile());
         return;
       }
     }
   }, true);
+
+  // モバイル/汎用: 「📷」ボタン → まず Clipboard API(read)、不可なら
+  // 写真ピッカー(<input type=file accept=image/*> capture 無し)。
+  // iOS Safari/Android Chrome は paste では画像不可だがこの経路は可。
+  const imgBtn = $("img"), imgFile = $("imgfile");
+  if (imgBtn && imgFile) {
+    imgBtn.onclick = async () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.read) {
+          const list = await navigator.clipboard.read();
+          for (const it of list) {
+            const t = it.types.find((x) => x.indexOf("image/") === 0);
+            if (t) { await sendImageBlob(await it.getType(t)); return; }
+          }
+        }
+      } catch (e) { /* 権限拒否/未対応 → ピッカーへ */ }
+      imgFile.click(); // 写真/カメラから選択（モバイル確実経路）
+    };
+    imgFile.onchange = async () => {
+      const f = imgFile.files && imgFile.files[0];
+      if (f) await sendImageBlob(f);
+      imgFile.value = "";
+    };
+  }
 
   // window resize / ズーム / スクロール / URL バーでは **何もしない**
   // （意図的にハンドラ無し＝RESIZE 逆流の暴走を構造的に防止）。
