@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
 	mux.HandleFunc("/api/devices", s.apiGuard(s.apiDevices))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
+	mux.HandleFunc("/api/pc/delete", s.apiGuard(s.apiDeletePC)) // 端末ペアリング削除
 	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll)) // 端末追加コード発行
 	mux.HandleFunc("/enroll", s.enroll)                    // 新 PC が code 交換
 	mux.HandleFunc("/ws", s.wsViewer)
@@ -249,6 +250,32 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request, t webauth.T
 		ss = []map[string]any{}
 	}
 	json.NewEncoder(w).Encode(ss)
+}
+
+// apiDeletePC: 端末ペアリング削除（pcs/{pc}＋sessions＋wake/{pc}）。
+// 破壊的・状態変更なので **POST 限定**（GET だと画像/CSRF で誤発火）。
+// cookie 必須（apiGuard）＋スコープ検証。短命 relaygrants は TTL で
+// 自然失効するため対象外。失効/不要/旧端末を一覧から消すための機能。
+func (s *Server) apiDeletePC(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"post only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	pc := r.URL.Query().Get("pc")
+	if pc == "" {
+		pc = r.FormValue("pc")
+	}
+	if pc == "" || !s.allows(t, pc) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := s.st.DeletePCByID(ctx, pc); err != nil {
+		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "pc": pc})
 }
 
 func relayWSS(r *http.Request) string {

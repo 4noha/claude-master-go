@@ -302,6 +302,8 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "cursorY"},        // ライブ行へ着地（空白回避）
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},       // 一覧→term へ dir 受渡し
+		{"/static/devices.js", "/api/pc/delete"}, // ペアリング削除呼出
+		{"/static/devices.js", "ペアリング削除"},   // 削除ボタン
 	} {
 		if !strings.Contains(bodyStr(do(a.p)), a.want) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
@@ -503,4 +505,51 @@ func TestEnrollFlowRealFirestore(t *testing.T) {
 func postForm(u, k, v string) *http.Response {
 	r, _ := http.PostForm(u, url.Values{k: {v}})
 	return r
+}
+
+// 端末ペアリング削除 API: cookie 必須・POST 限定・スコープ検証で
+// pcs/{pc}＋sessions＋wake を削除し一覧から消す。
+func TestApiDeletePC(t *testing.T) {
+	st := newSt(t, "web1")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+	if _, err := st.PushStatus(context.Background(), []map[string]any{
+		{"key": "s1", "session_id": "s1", "short_dir": "d1",
+			"is_active": true, "pid": float64(1), "cwd": "/a",
+			"start_time": "x", "cpu_percent": float64(0),
+			"mem_mb": float64(0)}}); err != nil {
+		t.Fatalf("PushStatus: %v", err)
+	}
+	post := func(path string, withCk bool) *http.Response {
+		req, _ := http.NewRequest("POST", ts.URL+path, nil)
+		if withCk {
+			req.Header.Set("Cookie", ck)
+		}
+		r, _ := noRedir().Do(req)
+		return r
+	}
+	// 未認証 → 401
+	if r := post("/api/pc/delete?pc=web1", false); r.StatusCode != 401 {
+		t.Fatalf("未認証 delete が 401 でない: %d", r.StatusCode)
+	}
+	// GET（cookie 有）→ 405（POST 限定）
+	req, _ := http.NewRequest("GET", ts.URL+"/api/pc/delete?pc=web1", nil)
+	req.Header.Set("Cookie", ck)
+	if r, _ := noRedir().Do(req); r.StatusCode != 405 {
+		t.Fatalf("GET delete が 405 でない: %d", r.StatusCode)
+	}
+	// pc 無し → 403
+	if r := post("/api/pc/delete", true); r.StatusCode != 403 {
+		t.Fatalf("pc 無し delete が 403 でない: %d", r.StatusCode)
+	}
+	// 正常: POST + cookie → 200、Firestore から消える
+	if r := post("/api/pc/delete?pc=web1", true); r.StatusCode != 200 {
+		t.Fatalf("認証済 delete が 200 でない: %d", r.StatusCode)
+	}
+	pcs, _ := st.ListPCs(context.Background())
+	for _, p := range pcs {
+		if p == "web1" {
+			t.Fatalf("削除後も web1 が一覧に残存: %v", pcs)
+		}
+	}
 }

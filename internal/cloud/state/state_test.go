@@ -317,3 +317,41 @@ func TestRelayGrantPutCheckExpiry(t *testing.T) {
 		t.Fatal("不正引数の安全側挙動が不正")
 	}
 }
+
+// DeletePCByID: 管理 UI の「端末ペアリング削除」。任意 PC の
+// pcs/{pc}＋sessions＋wake/{pc} を消し一覧から除去。空 ID は安全 no-op。
+func TestDeletePCByID(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-del")
+	if _, err := c.PushStatus(ctx, []map[string]any{
+		realSession("s1", 1.0, true)}); err != nil {
+		t.Fatalf("PushStatus: %v", err)
+	}
+	_ = c.Wake(ctx, "pc-del", "s1")
+	pcs, _ := c.ListPCs(ctx)
+	found := false
+	for _, p := range pcs {
+		if p == "pc-del" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("削除前に pc-del が一覧に無い: %v", pcs)
+	}
+	if c.DeletePCByID(ctx, "") != nil {
+		t.Fatal("空 ID は no-op のはず")
+	}
+	if err := c.DeletePCByID(ctx, "pc-del"); err != nil {
+		t.Fatalf("DeletePCByID: %v", err)
+	}
+	pcs, _ = c.ListPCs(ctx)
+	for _, p := range pcs {
+		if p == "pc-del" {
+			t.Fatalf("削除後も pc-del が残存: %v", pcs)
+		}
+	}
+	ss, _ := c.ListSessions(ctx, "pc-del")
+	if len(ss) != 0 {
+		t.Fatalf("sessions が消えていない: %v", ss)
+	}
+}

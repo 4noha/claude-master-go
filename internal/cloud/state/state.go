@@ -160,19 +160,34 @@ func (c *Client) RegisterPC(ctx context.Context) error {
 	return err
 }
 
-// DeletePC は pcs/{pcID}（sessions サブコレクション含む）と wake/{pcID}
-// を削除する（テスト端末の後始末・端末解除用）。
-func (c *Client) DeletePC(ctx context.Context) error {
-	col := c.fs.Collection("pcs").Doc(c.pcID).Collection("sessions")
+// deletePC は pcs/{pcID}（sessions サブコレクション含む）と wake/{pcID}
+// を削除する内部実装。
+func (c *Client) deletePC(ctx context.Context, pcID string) error {
+	if pcID == "" {
+		return nil
+	}
+	col := c.fs.Collection("pcs").Doc(pcID).Collection("sessions")
 	docs, err := col.Documents(ctx).GetAll()
 	if err == nil {
 		for _, d := range docs {
 			_, _ = d.Ref.Delete(ctx)
 		}
 	}
-	_, _ = c.fs.Collection("pcs").Doc(c.pcID).Delete(ctx)
-	_, err = c.fs.Collection("wake").Doc(c.pcID).Delete(ctx)
+	_, _ = c.fs.Collection("pcs").Doc(pcID).Delete(ctx)
+	_, err = c.fs.Collection("wake").Doc(pcID).Delete(ctx)
 	return err
+}
+
+// DeletePC は自 PC（テスト端末の後始末・端末解除用）。
+func (c *Client) DeletePC(ctx context.Context) error {
+	return c.deletePC(ctx, c.pcID)
+}
+
+// DeletePCByID は任意 PC の登録（pcs/{pc}＋sessions＋wake/{pc}）を削除
+// する。Web 管理 UI の「端末ペアリング削除」用（古い/不要/失効端末を
+// 一覧から消す）。短命 relaygrants は TTL で自然失効するので対象外。
+func (c *Client) DeletePCByID(ctx context.Context, pcID string) error {
+	return c.deletePC(ctx, pcID)
 }
 
 // WatchSessions は全 PC の sessions コレクショングループを real-time

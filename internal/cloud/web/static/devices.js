@@ -25,7 +25,27 @@ async function main() {
     const root = $("devices");
     for (const d of devs) {
       const card = el("div", { className: "dev" });
-      card.appendChild(el("h2", null, d.id));
+      const head = el("div", { className: "devhead" });
+      head.appendChild(el("h2", null, d.id));
+      const del = el("button", { className: "del" }, "ペアリング削除");
+      del.onclick = async () => {
+        if (!confirm(d.id + " のペアリングを削除します。\n" +
+          "（一覧から消えます。その PC は再 enroll で復帰可能）")) return;
+        del.disabled = true;
+        try {
+          const r = await fetch("/api/pc/delete?pc=" +
+            encodeURIComponent(d.id), { method: "POST",
+            headers: { Accept: "application/json" } });
+          if (r.status === 401) { location.href = "/login"; return; }
+          if (!r.ok) throw new Error("削除失敗 " + r.status);
+          location.reload();
+        } catch (e) {
+          del.disabled = false;
+          alert("エラー: " + e.message);
+        }
+      };
+      head.appendChild(del);
+      card.appendChild(head);
       card.appendChild(el("div", { className: "meta" },
         "セッション " + d.sessions + " 件（稼働中 " + d.active + "）"));
       const ss = await jget("/api/sessions?pc=" + encodeURIComponent(d.id));

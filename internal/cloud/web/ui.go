@@ -40,6 +40,11 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  .dev{background:#17171b;border:1px solid #2a2a30;border-radius:10px;
   padding:14px 16px;margin:14px 0}
  .dev h2{font-size:15px;margin:0 0 4px}
+ .devhead{display:flex;align-items:center;justify-content:space-between;
+  gap:10px}
+ .del{background:#3a1f22;color:#f3b4b4;border:1px solid #5a2a2e;
+  border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+ .del:disabled{opacity:.4;cursor:default}
  .meta{color:#9aa;font-size:12px;margin-bottom:10px}
  .s{display:flex;justify-content:space-between;align-items:center;
   padding:8px 10px;border-top:1px solid #24242a}
