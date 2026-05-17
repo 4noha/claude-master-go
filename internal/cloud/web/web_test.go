@@ -279,42 +279,45 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	if !strings.Contains(tb, `id="prev"`) || !strings.Contains(tb, `id="next"`) {
 		t.Fatal("/term にコンソール切替ボタン（prev/next）が無い")
 	}
-	// タッチスクロール時の pull-to-refresh / overscroll を CSS で殺す
-	// （JS preventDefault は方向確定前に間に合わない）。
+	// 固定論理サイズ＋native スクロール設計の CSS。pull-to-refresh は
+	// document 固定＋overscroll-behavior:none、#term-host は
+	// overscroll-behavior:contain でスクロール連鎖も断つ。native
+	// スクロール/ズームのため touch-action は pan-x pan-y pinch-zoom。
 	for _, css := range []string{"overscroll-behavior:none",
-		"touch-action:pinch-zoom", "position:fixed"} {
+		"overscroll-behavior:contain", "position:fixed",
+		"touch-action:pan-x pan-y pinch-zoom"} {
 		if !strings.Contains(tb, css) {
-			t.Fatalf("/term に pull-to-refresh 抑止 CSS %q が無い", css)
+			t.Fatalf("/term に固定サイズ＋native スクロール CSS %q が無い", css)
 		}
 	}
-	// 静的アセット（ディレクトリ名表示・スワイプ切替の存在も検証）
+	// 静的アセット（dir 表示・固定論理サイズの存在を検証）
 	for _, a := range []struct{ p, want string }{
 		{"/static/xterm.css", ".xterm"},
-		{"/static/addon-fit.js", "FitAddon"},
 		{"/static/term.js", "WebSocket"},
-		{"/static/term.js", "touchend"},          // スワイプ切替
-		{"/static/term.js", `qs.get("dir")`},     // ディレクトリ名表示
-		{"/static/term.js", "scrollback: 0"},     // xterm 自前スクロール無効
-		{"/static/term.js", "scrollFrame"},       // ホイール→SCROLL 変換
-		{"/static/term.js", `"wheel"`},           // ホイール捕捉
-		{"/static/term.js", "PageUp"},            // PageUp→スクリーン内
-		{"/static/term.js", `"touchmove"`},       // スマホ縦ドラッグ→スクロール
-		{"/static/term.js", "WEB_COLS"},          // 固定広幅レンダー
+		{"/static/term.js", `qs.get("dir")`},  // ディレクトリ名表示
+		{"/static/term.js", "scrollback: 0"},  // xterm 自前スクロール無効
+		{"/static/term.js", "WEB_COLS"},       // 固定桁
+		{"/static/term.js", "WEB_ROWS"},       // 固定行（背高グリッド）
 		{"/static/devices.js", "/term?pc="},
-		{"/static/devices.js", "&dir="},          // 一覧→term へ dir 受渡し
+		{"/static/devices.js", "&dir="},       // 一覧→term へ dir 受渡し
 	} {
 		if !strings.Contains(bodyStr(do(a.p)), a.want) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
 		}
 	}
-	// Web は固定広幅(WEB_COLS)で RESIZE を送り横の見切れを無くす
-	// （送らない/狭いと proxy が要求 cols で左から切り捨て＝見切れ）。
-	// 送出コードと固定広幅指定の存在を機械検証。
 	tj := bodyStr(do("/static/term.js"))
-	for _, want := range []string{"resizeFrame", "0xff",
-		"resizeFrame(term.rows, WEB_COLS)"} {
-		if !strings.Contains(tj, want) {
-			t.Fatalf("term.js に固定広幅 RESIZE 送出コード %q が無い", want)
+	// RESIZE は固定論理サイズを接続時 1 回（resizeFrame(WEB_ROWS,
+	// WEB_COLS)）。
+	if !strings.Contains(tj, "resizeFrame(WEB_ROWS, WEB_COLS)") {
+		t.Fatal("term.js に固定論理サイズ RESIZE 送出が無い")
+	}
+	// 暴走の原因＝「自分の寸法を測って RESIZE 逆流」「SCROLL 変換」を
+	// 構造的に排除したことを機械検証（これらが復活したら回帰）。
+	for _, banned := range []string{"scrollFrame(", "new FitAddon",
+		"loadAddon(", `addEventListener("wheel"`,
+		`addEventListener("resize"`, `"touchmove"`} {
+		if strings.Contains(tj, banned) {
+			t.Fatalf("term.js に暴走要因 %q が残存（固定サイズ＋native スクロール設計に反する）", banned)
 		}
 	}
 	if n := bodyLen(do("/static/xterm.js")); n < 100000 {

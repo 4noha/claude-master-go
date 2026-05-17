@@ -1,19 +1,34 @@
 // Web ターミナル本体（/term?pc=&sid=&dir=）。端末一覧からリンクで開く。
-// relay の RESIZE/frame protocol をそのまま話す（無改変）。バー表示に
-// ディレクトリ名、左右スワイプ／‹›でコンソール切替。
+// relay の frame protocol をそのまま話す（無改変）。
 //
-// RESIZE について: Go proxy では client（tmux socket-client/Web）の
-// RESIZE は **その client 自身の per-client ビューポート描画サイズ**を
-// 決めるだけで、PTY/claude のサイズは変えない（PTY は host=proxy 起動
-// 端末の SIGWINCH のみ追従）。Python 設計の client/largest PTY 追従は
-// Go へ未移植（host 生パススルーのみ特別扱い）。よって Web は
-// socket-client と同様に窓サイズを送ってよい（他者影響なし）。送らない
-// と proxy 既定 80x24 の小窓に固定され claude 画面が見切れるため送る。
+// 設計（暴走の原因除去）: Web は **固定論理サイズ 160×500 の素朴な
+// ビューア**。自分の DOM 寸法を一切測らず（FitAddon 不使用）、RESIZE は
+// 接続時に 1 回だけ送る。ブラウザの resize/ズーム/スクロール/モバイル
+// URL バー出入りでは **再 RESIZE しない**＝「測る→RESIZE→proxy 全消去
+// 再描画→レイアウト変化→また測る」のフィードバック暴走を構造的に断つ。
+// proxy は 160×500 の viewport を絶対座標で再描画するだけ（モデル→
+// viewport のまま＝claude --resume 再ストリームでも重複しない）。背の
+// 高い固定グリッドを #term-host の overflow で **ブラウザ native スク
+// ロール**して読む（セル書換は scrollTop を動かさないので崩れない）。
+// 横の見切れは固定広幅＋ブラウザのピンチズーム/横パンで閲覧。
+// コンソール切替は ‹/› ボタン（横スワイプは native スクロールと競合
+// するため廃止）。
 "use strict";
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const qs = new URLSearchParams(location.search);
 const pc = qs.get("pc"), sid = qs.get("sid"), dir = qs.get("dir") || "";
+
+// 固定論理サイズ。?cols=/?rows= で上書き可（1..2000）。既定 160×500。
+// cols がモデル幅以上なら横は見切れず全文到達（余りは背景空白）。
+// rows ぶんの最新行を native スクロールで読める（大きいほど深く読める
+// が毎フレーム cols×rows 送信で重くなる＝500 が実用バランス）。
+const clampNum = (v, def) => {
+  const n = parseInt(v, 10);
+  return n > 0 && n <= 2000 ? n : def;
+};
+const WEB_COLS = clampNum(qs.get("cols"), 160);
+const WEB_ROWS = clampNum(qs.get("rows"), 500);
 
 function resizeFrame(rows, cols) {
   const b = new Uint8Array(6);
@@ -23,30 +38,6 @@ function resizeFrame(rows, cols) {
   return b;
 }
 
-// SCROLL_MAGIC(0xff 0xfe) + int16 BE dy。proxy(server.go
-// parseClientInput)が受けて per-client ScrollRenderer を pan＝
-// ミニ tmux のスクリーン内スクロール。socket_client の sendScroll と
-// 同一ワイヤ形式（dy<0=古い/上, dy>0=新しい/下, 32767=live 復帰）。
-// xterm 自前スクロールは絶対座標再描画と衝突し表示破壊するので使わず
-// 必ずこの変換を通す（他環境＝socket_client/nav と同じ規律）。
-const SCROLL_STEP = 3;       // ホイール 1 ノッチあたり行
-const PAGE_STEP = 10;        // PageUp/PageDown 1 回あたり行
-const FOLLOW_DY = 32767;     // live（最下部）復帰
-const TOP_DY = -32768;       // 最古へ（Home 相当・clamp16 と同値）
-const TOUCH_FALLBACK_PX = 18; // 1 行 px が測れない時の保険
-// Web は端末をスマホ幅へ縮めず **固定広幅**でレンダーし、横の見切れを
-// 無くす（proxy は要求 cols で左から描画＝cols がモデル幅以上なら全文
-// 到達。余りは背景空白で無害）。画面より広い分はブラウザのピンチ
-// ズーム／横スクロールで閲覧する。?cols= で上書き可。既定 160。
-const WEB_COLS = (() => {
-  const n = parseInt(qs.get("cols"), 10);
-  return n > 0 && n <= 1000 ? n : 160;
-})();
-function scrollFrame(dy) {
-  const v = dy & 0xffff;     // int16 二の補数 下位16bit
-  return new Uint8Array([0xff, 0xfe, (v >> 8) & 0xff, v & 0xff]);
-}
-
 async function jget(u) {
   const r = await fetch(u, { headers: { Accept: "application/json" } });
   if (!r.ok) throw new Error(u + " -> " + r.status);
@@ -54,7 +45,7 @@ async function jget(u) {
 }
 
 // アカウント内の全コンソールを端末一覧と同じ順で平坦化（pc→session）。
-// スワイプ/ボタンで前後のコンソールへ location 遷移して切り替える。
+// ‹/› ボタンで前後のコンソールへ location 遷移して切り替える。
 async function buildConsoleList() {
   const devs = await jget("/api/devices");
   const list = [];
@@ -73,10 +64,12 @@ async function buildConsoleList() {
 function termURL(c) {
   return "/term?pc=" + encodeURIComponent(c.pc) +
     "&sid=" + encodeURIComponent(c.sid) +
-    "&dir=" + encodeURIComponent(c.dir);
+    "&dir=" + encodeURIComponent(c.dir) +
+    (qs.get("cols") ? "&cols=" + encodeURIComponent(qs.get("cols")) : "") +
+    (qs.get("rows") ? "&rows=" + encodeURIComponent(qs.get("rows")) : "");
 }
 
-// コンソール切替（前後）。一覧取得失敗時は単独表示のまま無効化。
+// コンソール切替（前後ボタン）。一覧取得失敗時は単独表示のまま無効化。
 function setupSwitch() {
   let list = [], idx = -1;
   const prevB = $("prev"), nextB = $("next");
@@ -97,22 +90,6 @@ function setupSwitch() {
       if (idx >= 0) $("pos").textContent = " (" + (idx + 1) + "/" + list.length + ")";
     }
   }).catch(() => { /* 切替不可でもターミナルは使える */ });
-
-  // 左右スワイプ: 横移動が縦より優位かつ閾値超で前後へ。
-  const host = $("term");
-  let sx = 0, sy = 0, st = 0;
-  host.addEventListener("touchstart", (e) => {
-    const t = e.changedTouches[0];
-    sx = t.clientX; sy = t.clientY; st = Date.now();
-  }, { passive: true });
-  host.addEventListener("touchend", (e) => {
-    const t = e.changedTouches[0];
-    const dx = t.clientX - sx, dy = t.clientY - sy;
-    if (Date.now() - st < 800 &&
-        Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-      go(dx < 0 ? 1 : -1); // 左フリック=次 / 右フリック=前
-    }
-  }, { passive: true });
 }
 
 function run() {
@@ -123,34 +100,24 @@ function run() {
 
   setupSwitch();
 
-  // scrollback:0 ＝ xterm 自前スクロールバックを持たない。proxy が
-  // 毎フレーム絶対座標で全画面再描画する（ミニ tmux）ため、xterm が
-  // ローカルスクロールすると衝突して表示が壊れる。スクロールは proxy
-  // 側の managed scroll に一本化する（他環境の socket_client と同じ）。
+  // 固定論理グリッド 160×500（scrollback:0＝xterm 自前スクロール無し。
+  // proxy が viewport を絶対再描画する。背の高い要素を #term-host の
+  // overflow で native スクロールする）。FitAddon は使わない（自分の
+  // 寸法を測って RESIZE 逆流させると暴走するため）。
   const term = new Terminal({ cursorBlink: true, scrollback: 0,
+    cols: WEB_COLS, rows: WEB_ROWS,
     fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
   term.open($("term-host"));
-  // 行数だけ画面高から採り、桁は固定広幅 WEB_COLS に強制
-  // （fit で桁をスマホ幅に縮めると proxy が見切るため）。
-  const applySize = () => {
-    fit.fit();
-    term.resize(WEB_COLS, Math.max(4, term.rows));
-  };
-  applySize();
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(proto + "//" + location.host + "/ws?pc=" +
     encodeURIComponent(pc) + "&sid=" + encodeURIComponent(sid));
   ws.binaryType = "arraybuffer";
-  const wsend = (b) => { if (ws.readyState === 1) ws.send(b); };
-
-  let scrolled = false; // proxy 側で遡り中（タイプで live 復帰させる）
-  const doScroll = (dy) => { wsend(scrollFrame(dy)); scrolled = true; };
 
   ws.onopen = () => {
-    ws.send(resizeFrame(term.rows, WEB_COLS)); // 固定広幅で全文を要求
+    // 固定論理サイズを **接続時 1 回だけ** 送る。以後 resize/ズーム/
+    // スクロール/URL バーで再送しない（暴走ループを断つ核心）。
+    ws.send(resizeFrame(WEB_ROWS, WEB_COLS));
     $("stat").textContent = "接続済";
   };
   ws.onmessage = (ev) => term.write(new Uint8Array(ev.data));
@@ -158,97 +125,9 @@ function run() {
   ws.onerror = () => { $("stat").textContent = "エラー"; };
 
   term.onData((d) => {
-    // 遡り中に実入力 → まず live 復帰させてからキーを送る
-    // （socket_client の pkScrolled リセットと同規律）。
-    if (scrolled) { wsend(scrollFrame(FOLLOW_DY)); scrolled = false; }
-    wsend(enc.encode(d));
+    if (ws.readyState === 1) ws.send(enc.encode(d));
   });
-
-  // ホイール/トラックパッド → proxy の managed scroll へ変換。
-  // xterm/ブラウザのネイティブスクロールは止める（衝突＝表示破壊源）。
-  term.element.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    doScroll(e.deltaY > 0 ? SCROLL_STEP : -SCROLL_STEP);
-  }, { passive: false, capture: true });
-
-  // PageUp/PageDown は claude へ送らずスクリーン内スクロールへ変換
-  // （ユーザー要望「PageUp のときのように」）。Home/End 等は claude の
-  // 行編集を壊さないため変換しない。
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== "keydown") return true;
-    if (e.key === "PageUp") { doScroll(-PAGE_STEP); return false; }
-    if (e.key === "PageDown") { doScroll(PAGE_STEP); return false; }
-    if (e.shiftKey && e.key === "Home") { doScroll(TOP_DY); return false; }
-    if (e.shiftKey && e.key === "End") {
-      wsend(scrollFrame(FOLLOW_DY)); scrolled = false; return false;
-    }
-    return true;
-  });
-
-  // スマホ等のタッチ縦ドラッグ → proxy の managed scroll へ変換。
-  // 横スワイプ（setupSwitch のコンソール切替）と衝突しないよう、縦が
-  // 横より優位になった時だけスクロール扱い（その間は preventDefault で
-  // ページスクロール/pull-to-refresh を抑止）。指を下げる=過去を見る
-  // ＝SCROLL 負（content が指に追従。tmux copy-mode と同じ自然方向）。
-  const thost = $("term");
-  let tx0 = 0, ty0 = 0, tly = 0, tact = false, tvert = false;
-  let pendPx = 0, rowPx = TOUCH_FALLBACK_PX, rafQ = false;
-  // 実際の 1 行ピクセル高（端末要素高 ÷ 行数）。固定値だと指と
-  // スクロール量がズレて追従が悪い。指の移動量 = 行高 ×行数 で
-  // 1:1 追従させる。ジェスチャ開始時に都度算出（リサイズ追随）。
-  const measureRow = () => {
-    const r = term.rows || 24;
-    const h = (term.element && term.element.clientHeight) || 0;
-    rowPx = h > 0 ? h / r : TOUCH_FALLBACK_PX;
-  };
-  // 蓄積ピクセルを行へ変換し **1 フレーム 1 回だけ** SCROLL 送出
-  // （touchmove 毎に送ると relay 往復が詰まり遅延・カクつく＝追従悪化。
-  // requestAnimationFrame で集約し正味移動量を一括反映＝滑らか）。
-  const flush = () => {
-    rafQ = false;
-    if (!tvert) return;
-    const rows = (pendPx / rowPx) | 0; // 切り捨て・符号保持
-    if (rows !== 0) {
-      pendPx -= rows * rowPx;
-      doScroll(-rows); // 指↓(rows>0)=過去=負 / 指↑=新しい=正
-    }
-  };
-  thost.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 1) { tact = false; return; }
-    const t = e.touches[0];
-    tx0 = t.clientX; ty0 = t.clientY; tly = t.clientY;
-    tact = true; tvert = false; pendPx = 0;
-    measureRow();
-  }, { passive: true });
-  thost.addEventListener("touchmove", (e) => {
-    if (!tact || e.touches.length !== 1) return;
-    // #term 上では何があってもブラウザ既定（ページスクロール/
-    // pull-to-refresh＝リロード）を起こさない。方向確定前でも必ず
-    // preventDefault（確定後だと最初の数 move でブラウザがジェスチャ
-    // を握りリロードが走るため）。横スワイプは座標で判定するので
-    // 既定を消しても切替は動く。
-    if (e.cancelable) e.preventDefault();
-    const t = e.touches[0];
-    const totDx = t.clientX - tx0, totDy = t.clientY - ty0;
-    if (!tvert) {
-      if (Math.abs(totDy) > 10 && Math.abs(totDy) > Math.abs(totDx)) {
-        tvert = true; // 縦ドラッグ確定
-      } else {
-        return; // まだ横スワイプの可能性 → スクロールはしない（切替へ）
-      }
-    }
-    pendPx += t.clientY - tly;
-    tly = t.clientY;
-    if (!rafQ) { rafQ = true; requestAnimationFrame(flush); }
-  }, { passive: false });
-  thost.addEventListener("touchend", () => {
-    tact = false;
-    flush(); // 指を離した時点の端数も反映（取りこぼし防止）
-  }, { passive: true });
-
-  window.addEventListener("resize", () => {
-    applySize();
-    if (ws.readyState === 1) ws.send(resizeFrame(term.rows, WEB_COLS));
-  });
+  // window resize / ズーム / スクロール / URL バーでは **何もしない**
+  // （意図的にハンドラ無し＝RESIZE 逆流の暴走を構造的に防止）。
 }
 run();

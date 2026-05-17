@@ -72,18 +72,16 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/xterm.css">
 <style>
- /* pull-to-refresh / overscroll を CSS で無効化（JS preventDefault は
-    方向確定前に間に合わずリロードが走るため、タイミング非依存で殺す）。
-    body 固定＋overscroll-behavior:none＋1本指 preventDefault で
-    リロードは死んだまま。一方 Web は端末を固定広幅でレンダーするので
-    画面より広い。touch-action:pinch-zoom で **ブラウザのピンチズーム
-    だけ許可**（1本指は従来どおり JS のスクロール/切替）。#term-host を
-    overflow:auto にし、はみ出す広い端末を横パンで閲覧可能にする。 */
+ /* Web は固定論理グリッド 160×500。背の高い端末を #term-host の
+    overflow で **ブラウザ native スクロール**して読む（縦/横/ピンチ
+    ズーム＝ブラウザ任せ。proxy へスクロール位置は一切返さない）。
+    pull-to-refresh は document を固定＋overscroll-behavior で殺し、
+    #term-host は overscroll-behavior:contain でスクロール連鎖も断つ
+    （ので native スクロールしてもリロードしない）。 */
  html,body{margin:0;height:100%;background:#0b0b0b;color:#ddd;
-  font-family:system-ui;overscroll-behavior:none;overflow:hidden;
-  -webkit-overflow-scrolling:auto}
+  font-family:system-ui;overscroll-behavior:none;overflow:hidden}
  body{position:fixed;inset:0}
- #term,#term *{touch-action:pinch-zoom}
+ #term,#term-host{touch-action:pan-x pan-y pinch-zoom}
  #bar{padding:6px 12px;background:#161616;display:flex;gap:10px;
   align-items:center;font-size:13px}
  #bar a{color:#7ab;text-decoration:none}
@@ -93,7 +91,8 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
   padding:4px 10px;font-size:14px;cursor:pointer}
  .nav:disabled{opacity:.35;cursor:default}
  #term{position:absolute;top:34px;left:0;right:0;bottom:0}
- #term-host{width:100%;height:100%;overflow:auto}
+ #term-host{width:100%;height:100%;overflow:auto;
+  overscroll-behavior:contain}
 </style>
 <body>
 <div id="bar">
@@ -105,6 +104,5 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 </div>
 <div id="term"><div id="term-host"></div></div>
 <script src="/static/xterm.js"></script>
-<script src="/static/addon-fit.js"></script>
 <script src="/static/term.js"></script>
 </body></html>`

@@ -264,6 +264,48 @@ PC-A`・`document.title`・`#pos=(2/4)`・JS エラー無し、`‹›`クリッ
 **合成左スワイプ**双方が `/term?pc=PC-B&sid=b1&dir=gamma`（正しい
 隣）へ遷移を確認。全 13 パッケージ緑。
 
+### 最終形（上記スクロール系を統合・置換）＝固定論理サイズ＋native スクロール
+
+経緯: 上の「SCROLL 変換」「タッチ縦ドラッグ」「固定広幅＋ピンチ
+ズーム」を重ねた結果、**縮小/スクロール/モバイル URL バー出入りで
+レンダリングが暴走**する事象が露見。
+
+真因（重要・設計上の核心）: **pty/proxy はブラウザのスクロール位置を
+一切見ていない**（`RenderANSI` は絶対座標の自己完結フレーム）。崩れは
+「Web クライアントが自分の DOM 寸法を `FitAddon` で測り RESIZE として
+proxy へ逆流 → proxy が viewport 変更で全消去再描画 → レイアウト変化
+→ また resize 発火 → …」というフィードバックループ。ズーム
+（devicePixelRatio 変化）・`overflow` スクロール・モバイル URL バー
+出入り（innerHeight 変化）が `resize` を撃ち続けて暴走する。
+「全バッファを流して native スクロール」は flow 方式＝`claude --resume`
+再ストリームで確定行が重複し dedup（禁じた分類）が要る既知欠陥に
+当たるため不採用（`SESSION_LOG`/`SIZE_POLICY=host` のみ安全）。
+
+最終解（ユーザー合意）: **Web は固定論理グリッド（既定 160×500、
+`?cols=`/`?rows=` 上書き）**。`FitAddon` 撤去・自分の寸法を測らない・
+**RESIZE は接続時 1 回だけ**・resize/ズーム/スクロール/URL バーで
+**再 RESIZE しない**＝ループを構造的に断つ。proxy は 160×500 viewport
+を絶対再描画するだけ（モデル→viewport のまま＝resume でも非重複）。
+背の高い固定グリッドを `#term-host{overflow:auto}` で **ブラウザ
+native スクロール**（セル書換は scrollTop を動かさないので非破壊）。
+SCROLL 変換/ホイール/PageUp/タッチ横取り/横スワイプは**全撤去**、
+コンソール切替は `‹/›` ボタンのみ。pull-to-refresh は
+`body{position:fixed}`＋`overscroll-behavior:none`＋`#term-host`
+`overscroll-behavior:contain` で死んだまま。横は固定広幅＋ブラウザ
+ピンチズーム/横パン（`touch-action:pan-x pan-y pinch-zoom`）。
+trade-off: 最新 N(=既定500)行ぶんの固定窓（古いものは対象外）、毎
+フレーム cols×rows 送信で N 大ほど重い（500 が実用バランス）、claude
+出力中は follow で内容がせり上がる（静止時に快適）。
+
+検証: 全 13 緑（web_test は固定論理サイズ/CSS の存在＋暴走要因
+`scrollFrame(`/`new FitAddon`/`addEventListener("wheel"`/
+`addEventListener("resize"`/`"touchmove"` の**不在**を機械検証）／
+node --check／実ブラウザ chrome-devtools: `{scrollback:0,cols:160,
+rows:500}`・RESIZE 1 本(500,160)のみ・`resize`/wheel/touch/PageUp で
+追加 RESIZE も SCROLL も 0・`?rows=1000&cols=200` 上書き・CSS 値・
+JS エラー無しを確認。ピンチズーム/native スクロールの操作感は実機
+確認に委ねる。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。
