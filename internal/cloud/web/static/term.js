@@ -34,6 +34,14 @@ const PAGE_STEP = 10;        // PageUp/PageDown 1 回あたり行
 const FOLLOW_DY = 32767;     // live（最下部）復帰
 const TOP_DY = -32768;       // 最古へ（Home 相当・clamp16 と同値）
 const TOUCH_FALLBACK_PX = 18; // 1 行 px が測れない時の保険
+// Web は端末をスマホ幅へ縮めず **固定広幅**でレンダーし、横の見切れを
+// 無くす（proxy は要求 cols で左から描画＝cols がモデル幅以上なら全文
+// 到達。余りは背景空白で無害）。画面より広い分はブラウザのピンチ
+// ズーム／横スクロールで閲覧する。?cols= で上書き可。既定 160。
+const WEB_COLS = (() => {
+  const n = parseInt(qs.get("cols"), 10);
+  return n > 0 && n <= 1000 ? n : 160;
+})();
 function scrollFrame(dy) {
   const v = dy & 0xffff;     // int16 二の補数 下位16bit
   return new Uint8Array([0xff, 0xfe, (v >> 8) & 0xff, v & 0xff]);
@@ -124,7 +132,13 @@ function run() {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open($("term-host"));
-  fit.fit();
+  // 行数だけ画面高から採り、桁は固定広幅 WEB_COLS に強制
+  // （fit で桁をスマホ幅に縮めると proxy が見切るため）。
+  const applySize = () => {
+    fit.fit();
+    term.resize(WEB_COLS, Math.max(4, term.rows));
+  };
+  applySize();
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(proto + "//" + location.host + "/ws?pc=" +
@@ -136,7 +150,7 @@ function run() {
   const doScroll = (dy) => { wsend(scrollFrame(dy)); scrolled = true; };
 
   ws.onopen = () => {
-    ws.send(resizeFrame(term.rows, term.cols)); // 自分のビューポートサイズ
+    ws.send(resizeFrame(term.rows, WEB_COLS)); // 固定広幅で全文を要求
     $("stat").textContent = "接続済";
   };
   ws.onmessage = (ev) => term.write(new Uint8Array(ev.data));
@@ -233,8 +247,8 @@ function run() {
   }, { passive: true });
 
   window.addEventListener("resize", () => {
-    fit.fit();
-    if (ws.readyState === 1) ws.send(resizeFrame(term.rows, term.cols));
+    applySize();
+    if (ws.readyState === 1) ws.send(resizeFrame(term.rows, WEB_COLS));
   });
 }
 run();

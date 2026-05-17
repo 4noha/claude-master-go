@@ -237,6 +237,25 @@ SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テス
   も `client.go sendResize` で接続時＋SIGWINCH に RESIZE を送って
   おり、Web も同じプロトコルに揃えるのが正。
 
+### Web の横見切れ解消＝固定広幅レンダー＋ブラウザズーム閲覧
+
+ブラウザ窓幅で RESIZE すると、スマホ等の狭い幅では proxy が要求 cols
+で左から切り捨て＝横が見切れる。Go は client→PTY 追従が未実装なので
+ポリシーでは救えない。ユーザー選択により Web のみ別解を採用:
+**端末を固定広幅でレンダー**（`WEB_COLS` 既定 160、`?cols=` で上書き。
+applySize が fit で行数だけ採り桁を WEB_COLS に強制、RESIZE も
+`resizeFrame(term.rows, WEB_COLS)`）。proxy はモデル幅以上の cols
+要求なら全文を返す（余りは背景空白＝無害）。画面より広い分は
+**ブラウザのピンチズーム＋横パン**で閲覧:
+- `#term,#term *{touch-action:pinch-zoom}`（2 本指ズーム許可。1 本指は
+  従来どおり JS のスクロール/切替が所有）
+- `#term-host{overflow:auto}`（はみ出す広い端末を横パン）
+- pull-to-refresh 抑止（`overscroll-behavior:none`＋`body{position:
+  fixed}`＋1 本指 preventDefault）は維持＝衝突なし
+制約: 全文幅はホスト端末幅が上限（既定 160 で実質ほぼ全カバー、
+超なら `?cols=` で拡大）。ピンチズーム/パンの操作感は実機確認に委ねる
+（ハーネスは RESIZE=WEB_COLS・CSS 値・非回帰を機械検証）。
+
 検証（多層）: ① go test（実 handler＋実 embed FS で swipe/dir/
 prev-next の存在＋**RESIZE 送出コード `resizeFrame`/`0xff`/
 `term.rows, term.cols` の存在**を機械検証）② node --check 構文

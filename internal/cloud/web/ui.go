@@ -72,16 +72,18 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/xterm.css">
 <style>
- /* タッチスクロール時のブラウザ pull-to-refresh / overscroll を
-    完全に無効化（JS preventDefault は方向確定前に間に合わずリロード
-    が走るため、タイミング非依存の CSS で殺す）。body は固定し
-    ドキュメント自体をドラッグ不能に。#term 配下は touch-action:none
-    でブラウザ既定ジェスチャを奪い、こちらの SCROLL 変換へ一本化。 */
+ /* pull-to-refresh / overscroll を CSS で無効化（JS preventDefault は
+    方向確定前に間に合わずリロードが走るため、タイミング非依存で殺す）。
+    body 固定＋overscroll-behavior:none＋1本指 preventDefault で
+    リロードは死んだまま。一方 Web は端末を固定広幅でレンダーするので
+    画面より広い。touch-action:pinch-zoom で **ブラウザのピンチズーム
+    だけ許可**（1本指は従来どおり JS のスクロール/切替）。#term-host を
+    overflow:auto にし、はみ出す広い端末を横パンで閲覧可能にする。 */
  html,body{margin:0;height:100%;background:#0b0b0b;color:#ddd;
   font-family:system-ui;overscroll-behavior:none;overflow:hidden;
   -webkit-overflow-scrolling:auto}
  body{position:fixed;inset:0}
- #term,#term *{touch-action:none}
+ #term,#term *{touch-action:pinch-zoom}
  #bar{padding:6px 12px;background:#161616;display:flex;gap:10px;
   align-items:center;font-size:13px}
  #bar a{color:#7ab;text-decoration:none}
@@ -91,7 +93,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
   padding:4px 10px;font-size:14px;cursor:pointer}
  .nav:disabled{opacity:.35;cursor:default}
  #term{position:absolute;top:34px;left:0;right:0;bottom:0}
- #term-host{width:100%;height:100%}
+ #term-host{width:100%;height:100%;overflow:auto}
 </style>
 <body>
 <div id="bar">

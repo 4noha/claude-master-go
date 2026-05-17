@@ -282,7 +282,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	// タッチスクロール時の pull-to-refresh / overscroll を CSS で殺す
 	// （JS preventDefault は方向確定前に間に合わない）。
 	for _, css := range []string{"overscroll-behavior:none",
-		"touch-action:none", "position:fixed"} {
+		"touch-action:pinch-zoom", "position:fixed"} {
 		if !strings.Contains(tb, css) {
 			t.Fatalf("/term に pull-to-refresh 抑止 CSS %q が無い", css)
 		}
@@ -299,6 +299,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", `"wheel"`},           // ホイール捕捉
 		{"/static/term.js", "PageUp"},            // PageUp→スクリーン内
 		{"/static/term.js", `"touchmove"`},       // スマホ縦ドラッグ→スクロール
+		{"/static/term.js", "WEB_COLS"},          // 固定広幅レンダー
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},          // 一覧→term へ dir 受渡し
 	} {
@@ -306,14 +307,14 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
 		}
 	}
-	// Web は socket-client 同様 RESIZE を送りブラウザ窓サイズの
-	// per-client ビューポートを得る（Go では client RESIZE は PTY/claude
-	// を変えず自分の描画サイズのみ。送らないと proxy 既定 80x24 に固定
-	// され見切れる）。送出コードの存在を機械検証。
+	// Web は固定広幅(WEB_COLS)で RESIZE を送り横の見切れを無くす
+	// （送らない/狭いと proxy が要求 cols で左から切り捨て＝見切れ）。
+	// 送出コードと固定広幅指定の存在を機械検証。
 	tj := bodyStr(do("/static/term.js"))
-	for _, want := range []string{"resizeFrame", "0xff", "term.rows, term.cols"} {
+	for _, want := range []string{"resizeFrame", "0xff",
+		"resizeFrame(term.rows, WEB_COLS)"} {
 		if !strings.Contains(tj, want) {
-			t.Fatalf("term.js に RESIZE 送出コード %q が無い（ブラウザ窓サイズ送信のはず）", want)
+			t.Fatalf("term.js に固定広幅 RESIZE 送出コード %q が無い", want)
 		}
 	}
 	if n := bodyLen(do("/static/xterm.js")); n < 100000 {
