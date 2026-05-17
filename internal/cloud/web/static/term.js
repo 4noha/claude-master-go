@@ -120,25 +120,35 @@ function run() {
     ws.send(resizeFrame(WEB_ROWS, WEB_COLS));
     $("stat").textContent = "接続済";
   };
-  // ページ読込時は最新（ライブ行＝グリッド最下部）が見えるよう、
-  // 初回フレーム描画後に #term-host を一番下までスクロールする
-  // （proxy は最新 N 行を出すので最下部が最新。以後はユーザーの
-  // native スクロール位置を尊重し触らない）。term.write の完了
-  // コールバックでパース後、rAF でレイアウト確定後に実行。
-  let landed = false;
-  const toBottom = () => {
-    const host = $("term-host");
-    host.scrollTop = host.scrollHeight; // 過大値はブラウザが max へ clamp
+  // ページ読込時は claude の **ライブ領域（カーソル行）** が見える位置
+  // へ着地させる。固定 500 行グリッドより idle セッションの内容は短い
+  // ので、物理最下部（=空白パディング）へ飛ばすと真っ白になる
+  // （「バッファが大きすぎ」の正体）。カーソル行を viewport 下端に
+  // 置けば、内容が短くても長くても常にライブ領域＋上に履歴が見える。
+  // また attach 直後は 80x24 catch-up→RESIZE 後 500x160 の順で複数
+  // フレームが来るため、**最初のフレームでなくバースト沈静後に 1 回**
+  // 着地する（最後のフレームから 180ms 静止 or 接続 4s で確定）。
+  const host = $("term-host");
+  let landing = true, landTimer = 0;
+  const toCursor = () => {
+    if (!landing) return;
+    landing = false;
+    const cellH = host.scrollHeight / WEB_ROWS; // 1 行 px（全高/行数）
+    let cy = 0;
+    try { cy = term.buffer.active.cursorY | 0; } catch (e) { cy = 0; }
+    const target = (cy + 1) * cellH - host.clientHeight;
+    host.scrollTop = target > 0 ? target : 0; // ライブ行を下端へ
   };
+  const scheduleLand = () => {
+    if (!landing) return;
+    clearTimeout(landTimer);
+    landTimer = setTimeout(
+      () => requestAnimationFrame(() => requestAnimationFrame(toCursor)),
+      180); // 最後のフレームから静止したら確定（idle: RESIZE 後すぐ）
+  };
+  setTimeout(toCursor, 4000); // 連続出力で沈静しなくても 4s で 1 回着地
   ws.onmessage = (ev) => {
-    term.write(new Uint8Array(ev.data), () => {
-      if (landed) return;
-      landed = true;
-      // レイアウト確定後（double rAF）＋ xterm の非同期描画が落ち着く
-      // 頃（遅延）に最下部へ。単発 rAF だと早すぎて数十px 足りない。
-      requestAnimationFrame(() => requestAnimationFrame(toBottom));
-      setTimeout(toBottom, 120);
-    });
+    term.write(new Uint8Array(ev.data), scheduleLand);
   };
   ws.onclose = () => { $("stat").textContent = "切断"; };
   ws.onerror = () => { $("stat").textContent = "エラー"; };
