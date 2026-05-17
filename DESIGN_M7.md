@@ -352,6 +352,61 @@ relay の Firestore はランタイム SA なので無停止。旧鍵で enroll 
   化なし＝自 GCP を信頼）。OAuth は External/Testing。多人数/公開化
   する場合は cookie 失効・レート制限・SA スコープ分離が要追加。
 
+## M7l: Web コンソールからの画像貼り付け（opt-in・macOS 主対象）
+
+要望: ブラウザでコピーした画像を、リモートで動く claude に添付したい。
+
+### 経緯（同じ轍を踏まない）
+
+当初設計＝「proxy がエージェントホストに temp ファイル化し、その**パス
+文字列を claude の pty へ注入**」。実装前に claude-code-guide で実機
+裏取り → **Claude Code はパス文字列では画像添付しない**（添付は
+Ctrl+V クリップボード or ドラッグのみ。`@path` はテキスト参照で画像
+バイト無し。stdin テキストで添付する文書化手段は無い）。よって**パス
+注入案は破棄**。二度と採らないこと（推測修正をしない＝実機検証して
+正解だった例）。
+
+### 採用設計
+
+唯一成立する経路＝「**エージェントホストの OS クリップボードへ画像を
+載せ、claude の pty へ Ctrl+V(0x16) を注入**」。
+
+- 転送: client→proxy に IMAGE magic を追加
+  `0xff 0xfd | u32(BE len) | u8(extCode) | payload`（1=png 2=jpeg
+  3=gif）。**relay は無改変**（RESIZE/SCROLL と同じ proxy 層の magic
+  ＝relay は素通し。不変条件「relay バイト透過」を破らない）。
+  `server.go parseClientInput` が部分受信バッファし、上限
+  `maxImageBytes`(8MiB)・未知 code・不正長は安全に破棄/resync。
+- proxy（claude と同ホスト）: `handleImagePaste` が
+  `~/.claude-master/paste/<rand>.<ext>`(0700 dir/0600 file・proxy
+  生成名＝traversal 不可) へ書き、`setClip`（差し替え可能 seam・
+  既定 macOS `osascript` で OS クリップボードへ）→ 成功時のみ
+  `s.p.master` へ `0x16`(Ctrl+V) 注入 → Claude Code が `[Image #N]`
+  添付。失敗時はファイル削除し注入しない。5 分 TTL で掃除。
+- ブラウザ: `term.js` が `document` の `paste`(⌘V/Ctrl+V) を捕捉し
+  画像 item を IMAGE フレーム化、既存認証済 `/ws` で送信（新公開面
+  ゼロ・cookie/grant ゲート流用）。
+- **`config.WebImagePaste`（既定 off）でオプトイン**。off の間は
+  IMAGE magic を完全無視＝従来挙動。
+
+### 既知の制約
+
+- エージェントホストに **GUI クリップボードが必要**（macOS 可。
+  ヘッドレスは不可）。**ホストの現クリップボードを上書き**（復元せず）。
+  v1 は **macOS のみ**（Linux xclip/wl-copy・Win PowerShell は将来）。
+  webp 非対応（png/jpeg/gif）。
+- seam（`setClip`）でテストは実クリップボードを汚さない。
+
+### 検証
+
+実エミュレータ不要。`ptyproxy` 実 pty＋seam で temp(0600)/場所/
+seam 引数/flag off/未知 code/部分受信を機械検証
+（`TestImagePasteTempFileAndClipboardSeam`）。`config` で env/file/
+既定（`TestWebImagePasteFlag`）。`web_test` で term.js に `0xfd`/
+`"paste"` 存在。全 13 緑／node --check。実機 e2e（実ブラウザで⌘V→
+リモート macOS で Ctrl+V 注入→claude が `[Image #N]`）は flag 有効化
+後に実施。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。

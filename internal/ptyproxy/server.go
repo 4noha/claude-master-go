@@ -2,10 +2,14 @@ package ptyproxy
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -18,12 +22,22 @@ import (
 //
 //	RESIZE_MAGIC = \xff\xff + uint16 rows + uint16 cols (big-endian)
 //	SCROLL_MAGIC = \xff\xfe + int16 dy (big-endian)
+//	IMAGE_MAGIC  = \xff\xfd + uint32 len(BE) + u8 extCode + payload
+//	  extCode: 1=png 2=jpeg 3=gif（webp 等は v1 非対応）
+//	  Web の貼付画像を **このホストの OS クリップボードへ載せ**、claude
+//	  の pty へ Ctrl+V(0x16) を注入して Claude Code に添付させる
+//	  （claude はパス文字列では添付しない＝実機検証で確定。クリップ
+//	  ボード/ドラッグのみ）。`WebImagePaste`(既定 off) でオプトイン。
 //
 // それ以外のバイトは claude への入力として master へ転送。
 var (
 	resizeMagic = []byte{0xff, 0xff}
 	scrollMagic = []byte{0xff, 0xfe}
+	imageMagic  = []byte{0xff, 0xfd}
 )
+
+// maxImageBytes は IMAGE payload 上限（DoS/disk-fill 防止）。
+const maxImageBytes = 8 << 20 // 8 MiB
 
 type client struct {
 	conn       net.Conn
@@ -57,6 +71,9 @@ type Server struct {
 	statusInit  bool   // 初回は必ず書く（Python の None 比較相当）
 	done     chan struct{}
 	doneOnce sync.Once
+	// setClip は画像をこのホストの OS クリップボードへ載せる（差し替え
+	// 可能＝テストで実クリップボードを汚さない seam。既定 macOS impl）。
+	setClip func(path, ext string) error
 }
 
 func NewServer(p *Proxy, cfg *config.Config, host io.Writer, hostCols, hostRows int) *Server {
@@ -71,7 +88,8 @@ func NewServer(p *Proxy, cfg *config.Config, host io.Writer, hostCols, hostRows 
 		p: p, cfg: cfg, clients: map[*client]struct{}{},
 		host: host, hostSR: screen.NewScrollRenderer(),
 		hCols: hostCols, hRows: hostRows, logsDir: logs,
-		done: make(chan struct{}),
+		done:    make(chan struct{}),
+		setClip: setMacClipboardImage,
 	}
 	return s
 }
@@ -224,10 +242,29 @@ func (s *Server) parseClientInput(c *client) {
 			s.mu.Unlock()
 			continue
 		}
+		if len(c.in) >= 2 && c.in[0] == imageMagic[0] && c.in[1] == imageMagic[1] {
+			if len(c.in) < 7 {
+				return // ヘッダ未着（2 magic+4 len+1 ext）
+			}
+			n := int(binary.BigEndian.Uint32(c.in[2:6]))
+			code := c.in[6]
+			if n <= 0 || n > maxImageBytes {
+				c.in = c.in[7:] // 不正長は header だけ捨て resync
+				continue
+			}
+			if len(c.in) < 7+n {
+				return // payload 未着（次 read で補完）
+			}
+			payload := append([]byte(nil), c.in[7:7+n]...)
+			c.in = c.in[7+n:]
+			s.handleImagePaste(payload, code)
+			continue
+		}
 		// マジックでない先頭バイト群は次マジックまで master へ転送
 		cut := len(c.in)
 		for i := 0; i+1 < len(c.in); i++ {
-			if c.in[i] == 0xff && (c.in[i+1] == 0xff || c.in[i+1] == 0xfe) {
+			if c.in[i] == 0xff && (c.in[i+1] == 0xff ||
+				c.in[i+1] == 0xfe || c.in[i+1] == 0xfd) {
 				cut = i
 				break
 			}
@@ -241,6 +278,77 @@ func (s *Server) parseClientInput(c *client) {
 			return
 		}
 	}
+}
+
+// imageExtClass は extCode→(拡張子, AppleScript クリップボードクラス)。
+// macOS osascript の `read … as <class>` 用。webp 等は v1 非対応。
+func imageExtClass(code byte) (ext, asClass string, ok bool) {
+	switch code {
+	case 1:
+		return "png", "«class PNGf»", true
+	case 2:
+		return "jpg", "«class JPEG»", true
+	case 3:
+		return "gif", "«class GIFf»", true
+	}
+	return "", "", false
+}
+
+// setMacClipboardImage は画像ファイルを macOS の OS クリップボードへ
+// 載せる（osascript）。Linux/Win は将来拡張（v1 は macOS 主対象）。
+// この seam を差し替えるとテストで実クリップボードを汚さない。
+func setMacClipboardImage(path, ext string) error {
+	var asClass string
+	switch ext {
+	case "png":
+		asClass = "«class PNGf»"
+	case "jpg":
+		asClass = "«class JPEG»"
+	case "gif":
+		asClass = "«class GIFf»"
+	default:
+		return fmt.Errorf("未対応拡張子: %s", ext)
+	}
+	scr := fmt.Sprintf("set the clipboard to (read (POSIX file %q) as %s)",
+		path, asClass)
+	return exec.Command("osascript", "-e", scr).Run()
+}
+
+// handleImagePaste は Web から届いた画像を一時ファイル化し、このホスト
+// の OS クリップボードへ載せ、claude の pty へ Ctrl+V(0x16) を注入して
+// Claude Code に添付させる（パス文字列では添付しない＝実機検証で確定。
+// 同じ轍を踏まないこと）。`WebImagePaste` 既定 off のオプトイン。
+// 一時ファイルは 0600・固定命名（traversal 不可）・TTL 削除。
+func (s *Server) handleImagePaste(payload []byte, code byte) {
+	if !s.cfg.WebImagePaste { // 既定 off：完全に従来挙動
+		return
+	}
+	ext, _, ok := imageExtClass(code)
+	if !ok || len(payload) == 0 || len(payload) > maxImageBytes {
+		return
+	}
+	dir := filepath.Join(filepath.Dir(s.cfg.SessionsDir), "paste")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	var rnd [8]byte
+	_, _ = rand.Read(rnd[:])
+	path := filepath.Join(dir, hex.EncodeToString(rnd[:])+"."+ext)
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		return
+	}
+	set := s.setClip
+	if set == nil {
+		set = setMacClipboardImage
+	}
+	if err := set(path, ext); err != nil {
+		_ = os.Remove(path) // クリップボード失敗時は注入しない・残さない
+		return
+	}
+	// Claude Code がホストのクリップボードを読み [Image #N] 添付
+	_, _ = s.p.master.Write([]byte{0x16}) // Ctrl+V
+	// claude が読み終えた頃に掃除（best-effort）
+	time.AfterFunc(5*time.Minute, func() { _ = os.Remove(path) })
 }
 
 // ---- host stdin ディスパッチ（Python pty_proxy._handle_host_stdin 移植）----

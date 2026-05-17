@@ -202,3 +202,73 @@ func TestClientScrollMagicPansHistory(t *testing.T) {
 			frameText(d.snapshot(), 164, 50))
 	}
 }
+
+// 画像貼付: IMAGE フレーム→一時ファイル(0600)＋クリップボード seam 呼出。
+// 実クリップボードは汚さない（setClip 差し替え）。flag off/未知 code/
+// 部分受信も検証。実 pty（sleep）で master 注入を許容。
+func TestImagePasteTempFileAndClipboardSeam(t *testing.T) {
+	p, err := Start([]string{"/bin/sh", "-c", "sleep 3"}, 80, 24)
+	if err != nil {
+		t.Skipf("Start 不可: %v", err)
+	}
+	defer p.Close()
+	td := t.TempDir()
+	cfg := &config.Config{SizePolicy: "client", NavKey: []byte{0x1c},
+		SessionsDir: filepath.Join(td, "sessions"), WebImagePaste: true}
+	srv := NewServer(p, cfg, nil, 0, 0)
+
+	var gotPath, gotExt string
+	var gotBytes []byte
+	srv.setClip = func(path, ext string) error {
+		gotPath, gotExt = path, ext
+		gotBytes, _ = os.ReadFile(path)
+		return nil
+	}
+	img := []byte("\x89PNG\r\n\x1a\nFAKEPNGDATA")
+	srv.handleImagePaste(img, 1) // 1=png
+	if gotExt != "png" || string(gotBytes) != string(img) {
+		t.Fatalf("clipboard seam に正しく渡らない ext=%q len=%d", gotExt, len(gotBytes))
+	}
+	want := filepath.Join(td, "paste")
+	if filepath.Dir(gotPath) != want {
+		t.Fatalf("一時ファイル場所が想定外: %s (want dir %s)", gotPath, want)
+	}
+	if fi, e := os.Stat(gotPath); e != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("一時ファイル不在/権限不正: %v %v", e, fi)
+	}
+
+	// flag off → 何もしない
+	cfg.WebImagePaste = false
+	called := false
+	srv.setClip = func(string, string) error { called = true; return nil }
+	srv.handleImagePaste(img, 1)
+	if called {
+		t.Fatal("WebImagePaste=off なのに処理された")
+	}
+	cfg.WebImagePaste = true
+
+	// 未知 code → 何もしない
+	called = false
+	srv.handleImagePaste(img, 9)
+	if called {
+		t.Fatal("未知 extCode で処理された")
+	}
+
+	// パーサ: 完全フレーム消費＋部分受信は保留
+	frame := append([]byte{0xff, 0xfd,
+		byte(len(img) >> 24), byte(len(img) >> 16),
+		byte(len(img) >> 8), byte(len(img)), 1}, img...)
+	hit := false
+	srv.setClip = func(string, string) error { hit = true; return nil }
+	c := &client{in: append([]byte{}, frame...), sr: screen.NewScrollRenderer()}
+	srv.parseClientInput(c)
+	if !hit || len(c.in) != 0 {
+		t.Fatalf("完全フレーム未処理 hit=%v remain=%d", hit, len(c.in))
+	}
+	hit = false
+	c2 := &client{in: frame[:5], sr: screen.NewScrollRenderer()} // payload 未着
+	srv.parseClientInput(c2)
+	if hit || len(c2.in) != 5 {
+		t.Fatalf("部分受信を誤処理 hit=%v remain=%d", hit, len(c2.in))
+	}
+}

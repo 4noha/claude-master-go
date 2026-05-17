@@ -31,6 +31,7 @@ type Config struct {
 	NavPageStep       int
 	PageKeyScroll     bool
 	WheelScroll       bool
+	WebImagePaste     bool // Web からの画像貼付（既定 off・macOS 主対象）
 	NavWheelStep      int
 	SessionLog        string // "" 無効 / "true" 自動 / パス
 
@@ -142,6 +143,7 @@ func Load() *Config {
 		NavPageStep:       integer("NAV_PAGE_STEP", 10, 1, 100000),
 		PageKeyScroll:     boolean("PAGEKEY_SCROLL", false),
 		WheelScroll:       boolean("WHEEL_SCROLL", false),
+		WebImagePaste:     boolean("WEB_IMAGE_PASTE", false),
 		NavWheelStep:      integer("NAV_WHEEL_STEP", 3, 1, 1000),
 		SessionLog:        strings.TrimSpace(str("SESSION_LOG", "")),
 

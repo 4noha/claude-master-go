@@ -60,6 +60,18 @@ func TestEnvOverridesFile(t *testing.T) {
 	}
 }
 
+func TestWebImagePasteFlag(t *testing.T) {
+	if withConfig(t, "", nil).WebImagePaste {
+		t.Error("WebImagePaste 既定は false のはず")
+	}
+	if !withConfig(t, "web_image_paste = true\n", nil).WebImagePaste {
+		t.Error("file で true にできない")
+	}
+	if !withConfig(t, "", map[string]string{"WEB_IMAGE_PASTE": "true"}).WebImagePaste {
+		t.Error("env で true にできない")
+	}
+}
+
 func TestMalformedFileIgnored(t *testing.T) {
 	c := withConfig(t, "this is = not [[[ valid toml\n", nil)
 	if c.SizePolicy != "client" || c.NavScrollStep != 1 {
