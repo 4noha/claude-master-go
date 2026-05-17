@@ -552,4 +552,9 @@ func TestApiDeletePC(t *testing.T) {
 			t.Fatalf("削除後も web1 が一覧に残存: %v", pcs)
 		}
 	}
+	// 単なる削除でなく **強制失効** が立つ（生きた agent が再登録
+	// しても relay が拒否＝復活しない）。
+	if !st.IsRevoked(context.Background(), "web1") {
+		t.Fatal("delete 後に web1 が revoked になっていない（復活防止不成立）")
+	}
 }

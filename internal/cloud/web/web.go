@@ -271,11 +271,18 @@ func (s *Server) apiDeletePC(w http.ResponseWriter, r *http.Request, t webauth.T
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+	// 先に強制失効を立てる（生きた agent が再登録しても relay が
+	// grant を拒否し agent も自停止＝復活しない）。その上で一覧から
+	// 削除。owner が再 enroll するまで解除されない。
+	if err := s.st.SetRevoked(ctx, pc); err != nil {
+		http.Error(w, `{"error":"revoke"}`, http.StatusInternalServerError)
+		return
+	}
 	if err := s.st.DeletePCByID(ctx, pc); err != nil {
 		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"ok": true, "pc": pc})
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "pc": pc, "revoked": true})
 }
 
 func relayWSS(r *http.Request) string {

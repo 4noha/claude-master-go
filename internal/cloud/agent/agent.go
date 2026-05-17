@@ -41,6 +41,11 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) handleWake(ctx context.Context, sid string) {
+	// 強制失効済なら source 接続しない（relay も grant 拒否するが
+	// 防御多重で agent 側でも止める）。
+	if a.St.IsSelfRevoked(ctx) {
+		return
+	}
 	a.mu.Lock()
 	if a.active[sid] {
 		a.mu.Unlock()

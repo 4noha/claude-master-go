@@ -322,10 +322,49 @@ func (c *Client) PutRelayGrant(ctx context.Context, sid, role string, ttl time.D
 	}
 	_, err := c.fs.Collection("relaygrants").Doc(relayGrantID(sid, role)).
 		Set(ctx, map[string]any{
-			"sid": sid, "role": role,
+			"sid": sid, "role": role, "pc": c.pcID,
 			"exp": time.Now().Add(ttl).UTC().Format(time.RFC3339Nano),
 		})
 	return err
+}
+
+// SetRevoked は端末を強制失効させる（管理 UI の「ペアリング解除」）。
+// revoked/{pc} を立てると CheckRelayGrant がその pc の grant を拒否し
+// （relay が権威）、当該 agent も自停止する（防御多重）。owner が
+// 意図的に再 enroll するまで有効。
+func (c *Client) SetRevoked(ctx context.Context, pc string) error {
+	if pc == "" {
+		return nil
+	}
+	_, err := c.fs.Collection("revoked").Doc(pc).Set(ctx, map[string]any{
+		"pc": pc, "at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	return err
+}
+
+// ClearRevoked は失効解除（owner 発行コードでの再 enroll 時に呼ぶ＝
+// 信頼の起点は owner 発行の一回限りコード）。
+func (c *Client) ClearRevoked(ctx context.Context, pc string) error {
+	if pc == "" {
+		return nil
+	}
+	_, err := c.fs.Collection("revoked").Doc(pc).Delete(ctx)
+	return err
+}
+
+// IsRevoked は pc が失効済みか。取得失敗は false（可用性優先＝主たる
+// 認可は grant。失効は付加的 deny）。
+func (c *Client) IsRevoked(ctx context.Context, pc string) bool {
+	if pc == "" {
+		return false
+	}
+	snap, err := c.fs.Collection("revoked").Doc(pc).Get(ctx)
+	return err == nil && snap != nil && snap.Exists()
+}
+
+// IsSelfRevoked は自 PC（c.pcID）が失効済みか（agent 自停止判定用）。
+func (c *Client) IsSelfRevoked(ctx context.Context) bool {
+	return c.IsRevoked(ctx, c.pcID)
 }
 
 // CheckRelayGrant は (sid,role) の有効な許可が存在するか（期限内か）。
@@ -340,10 +379,16 @@ func (c *Client) CheckRelayGrant(ctx context.Context, sid, role string) bool {
 	if err != nil || snap == nil || !snap.Exists() {
 		return false
 	}
-	es, _ := snap.Data()["exp"].(string)
+	d := snap.Data()
+	es, _ := d["exp"].(string)
 	t, perr := time.Parse(time.RFC3339Nano, es)
-	if perr != nil {
+	if perr != nil || !time.Now().Before(t) {
 		return false
 	}
-	return time.Now().Before(t)
+	// 強制失効: grant が指す pc が revoked なら期限内でも拒否
+	// （relay が権威。生きた agent が grant を書いても締め出せる）。
+	if pc2, _ := d["pc"].(string); pc2 != "" && c.IsRevoked(ctx, pc2) {
+		return false
+	}
+	return true
 }

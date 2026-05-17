@@ -346,6 +346,20 @@ func runCloudEnroll(args []string) {
 		}); err != nil {
 		exitErr(fmt.Errorf("設定書込失敗: %w", err))
 	}
+	// owner 発行コードでの正規 enroll＝再認可。過去の強制失効を解除
+	// （信頼の起点は owner 発行の一回限りコード。best-effort）。
+	if saPath != "" && b.GCPProject != "" {
+		_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", saPath)
+		cfg := config.Load()
+		if ctx, cancel := context.WithTimeout(context.Background(),
+			10*time.Second); true {
+			if est, e := state.New(ctx, b.GCPProject, cfg.PCID); e == nil {
+				_ = est.ClearRevoked(ctx, cfg.PCID)
+				est.Close()
+			}
+			cancel()
+		}
+	}
 	fmt.Println("端末を登録しました（このアカウントに参加）。")
 	fmt.Printf("  GCP_PROJECT=%s\n  CLOUD_RELAY_URL=%s\n", b.GCPProject, relayURL)
 	if saPath != "" {
@@ -387,7 +401,12 @@ func runCloudAgent(cfg *config.Config) {
 		exitErr(err)
 	}
 	defer st.Close()
-	if err := st.RegisterPC(ctx); err != nil { // 端末一覧に確実に出す
+	// 強制失効済なら登録しない（管理 UI で解除された端末。owner が
+	// 再 enroll するまでドーマント＝一覧にも出ない・コストも止まる）。
+	if st.IsSelfRevoked(ctx) {
+		fmt.Fprintln(os.Stderr,
+			"この端末はペアリング解除済（dormant）。再 enroll で復帰します。")
+	} else if err := st.RegisterPC(ctx); err != nil { // 端末一覧に確実に出す
 		exitErr(fmt.Errorf("PC 登録失敗: %w", err))
 	}
 	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）。
@@ -405,6 +424,17 @@ func runCloudAgent(cfg *config.Config) {
 			}
 		}
 		for {
+			// 失効中は push/登録を一切しない（一覧から消えたまま・
+			// コスト停止）。owner が ClearRevoked（再 enroll）したら
+			// 次 tick で自然復帰。
+			if st.IsSelfRevoked(ctx) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+				continue
+			}
 			ss := statusSessions(cfg)
 			cur := map[string]bool{}
 			for _, s := range ss {

@@ -355,3 +355,40 @@ func TestDeletePCByID(t *testing.T) {
 		t.Fatalf("sessions が消えていない: %v", ss)
 	}
 }
+
+// 強制失効: SetRevoked で CheckRelayGrant が有効 grant でも拒否（relay
+// 権威）、IsSelfRevoked で agent 自停止、ClearRevoked で再認可。
+func TestRevocationEnforcement(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-rev") // c.pcID="pc-rev"
+	if c.IsRevoked(ctx, "pc-rev") || c.IsSelfRevoked(ctx) {
+		t.Fatal("初期から失効扱い")
+	}
+	if err := c.PutRelayGrant(ctx, "sidR", "source", time.Minute); err != nil {
+		t.Fatalf("PutRelayGrant: %v", err)
+	}
+	if !c.CheckRelayGrant(ctx, "sidR", "source") {
+		t.Fatal("失効前に有効 grant が false")
+	}
+	// 失効 → 期限内 grant でも拒否、自 PC 判定も true
+	if err := c.SetRevoked(ctx, "pc-rev"); err != nil {
+		t.Fatalf("SetRevoked: %v", err)
+	}
+	if !c.IsRevoked(ctx, "pc-rev") || !c.IsSelfRevoked(ctx) {
+		t.Fatal("SetRevoked 後に失効判定されない")
+	}
+	if c.CheckRelayGrant(ctx, "sidR", "source") {
+		t.Fatal("失効中に grant が通った（relay 締め出し不成立）")
+	}
+	// 解除 → 復帰
+	if err := c.ClearRevoked(ctx, "pc-rev"); err != nil {
+		t.Fatalf("ClearRevoked: %v", err)
+	}
+	if c.IsRevoked(ctx, "pc-rev") ||
+		!c.CheckRelayGrant(ctx, "sidR", "source") {
+		t.Fatal("ClearRevoked 後に復帰しない")
+	}
+	if c.SetRevoked(ctx, "") != nil || c.IsRevoked(ctx, "") {
+		t.Fatal("空 pc の安全側挙動が不正")
+	}
+}
