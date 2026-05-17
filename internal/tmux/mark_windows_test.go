@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -75,4 +76,93 @@ func TestPsmuxMarkerRoundTripAndReconcile(t *testing.T) {
 	}
 	t.Logf("psmux marker 往復/dedupe/kill OK（@cm_remote 不使用・window名 "+
 		"base32 符号化）: id1=%s id3=%s session=%s", id1, id3, sess)
+}
+
+// winName は window_id の現在の窓名を実 psmux から取得（テスト用）。
+func winName(sess, id string) string {
+	o, _ := exec.Command("tmux", "list-windows", "-t", sess, "-F",
+		"#{window_id}=#{window_name}").Output()
+	for _, ln := range strings.Split(strings.TrimSpace(string(o)), "\n") {
+		k := strings.IndexByte(ln, '=')
+		if k >= 0 && ln[:k] == id {
+			return ln[k+1:]
+		}
+	}
+	return ""
+}
+
+// M8f(2) cosmetic 案 B の実 psmux 検証（鉄則#2）: 窓名が **可読ラベルで
+// 始まり** marker は厳密往復、stateless 再構築（新 Manager＝再起動模擬）、
+// dedup、旧 `cmr1_<b32>` 単体名の後方互換、を機械確認。
+func TestPsmuxReadableNameOptionB(t *testing.T) {
+	if err := CheckTmux(); err != nil {
+		t.Skipf("tmux(psmux) 不在: %v", err)
+	}
+	sess := "cmtest-m8fb-" + strconv.Itoa(os.Getpid())
+	m, err := NewManager(sess)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", sess).Run() })
+	m.EnsureSession()
+
+	live := "cmd /c ping -n 30 127.0.0.1 >NUL"
+	mkA := "cloud attach d20200d1-5501-4cc6-b1aa-67223cbb4809 --pc Mac-Studio"
+
+	id1 := m.NewMarkedWindow("worktree", live, mkA)
+	if id1 == "" {
+		t.Fatal("NewMarkedWindow id 空")
+	}
+	nm := winName(sess, id1)
+	if !strings.HasPrefix(nm, "worktree") || strings.HasPrefix(nm, winMarkPrefix) {
+		t.Fatalf("窓名が可読ラベルで始まらない: %q", nm)
+	}
+	if !strings.Contains(nm, winMarkPrefix) {
+		t.Fatalf("符号化トークン無し: %q", nm)
+	}
+	mw, err := m.MarkedWindows()
+	if err != nil || mw[id1] != mkA {
+		t.Fatalf("marker 往復不一致: mw[%s]=%q want %q err=%v", id1, mw[id1], mkA, err)
+	}
+
+	id2 := m.NewMarkedWindow("worktree", live, mkA)
+	mw, _ = m.MarkedWindows()
+	dup := 0
+	for _, v := range mw {
+		if v == mkA {
+			dup++
+		}
+	}
+	if id2 == "" || id1 == id2 || dup != 2 {
+		t.Fatalf("dedup 前提崩れ: id1=%s id2=%s dup=%d mw=%v", id1, id2, dup, mw)
+	}
+
+	// stateless 再構築: 新 Manager（in-memory 状態無し＝再起動模擬）。
+	m2, err := NewManager(sess)
+	if err != nil {
+		t.Fatalf("NewManager(2): %v", err)
+	}
+	mw2, err := m2.MarkedWindows()
+	if err != nil || mw2[id1] != mkA || mw2[id2] != mkA {
+		t.Fatalf("再起動模擬で marker 再構築不可: mw2=%v err=%v", mw2, err)
+	}
+
+	// 後方互換: 旧 `cmr1_<b32>` 単体名（ラベル無し）も復号できる。
+	mkC := "cloud attach pid-999 --pc OldStyle"
+	if _, e := outErr("new-window", "-t", sess, "-n", encMarkerToken(mkC), live); e != nil {
+		t.Fatalf("旧形式窓 作成: %v", e)
+	}
+	mw3, _ := m2.MarkedWindows()
+	found := false
+	for _, v := range mw3 {
+		if v == mkC {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("旧形式 cmr1_ 単体名が復号されない: %v", mw3)
+	}
+
+	t.Logf("案B OK: 窓名=%q（可読先頭＋cmr1_末尾）/ 厳密往復 / dedup=2 / "+
+		"再起動模擬 stateless 復元 / 旧形式後方互換", nm)
 }

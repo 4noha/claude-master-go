@@ -173,8 +173,69 @@ windows`）でファイル分割。インターフェースは**最小**にし�
      タグ化＝Mac/linux は従来通り全実行（parity 無影響）、Windows は
      `proxy_conpty_windows_test.go` が実 ConPTY ゲート。`host_dispatch_test.go`
      は OS 非依存で両 OS で実行。
-- **未決**: Windows でのデーモン常駐方式（Task Scheduler／Windows
-  Service／スタートアップ）→ M8e で決定（macOS launchd 相当）。
+- **決定（実施済）**: Windows のデーモン常駐＝**スケジュールタスク**
+  （ログオン時起動＋失敗時再起動・現ユーザー Interactive・無期限）。
+  `claude-master-cloud` タスク＋ラッパー `~/.claude-master\cloud-agent.cmd`
+  （env: GOOGLE_APPLICATION_CREDENTIALS/PATH に psmux,go\bin/ログ追記）
+  ＝macOS launchd LaunchAgent 相当。ログオン中のみ稼働（無人 24/7 は
+  要 password 保存 or サービス化＝別 follow-up）。
+
+### M8f(2) cosmetic follow-up: リモート窓名の可読化（設計案・未実装）
+
+**問題**: cloud agent の remote 同期窓が `cmr1_<base32(marker)>`
+（例 `cmr1_MNWG65LEEBQXI5DBMNUCAZBSG…`）表示で実用に耐えない。
+M8f(2) で psmux はカスタム per-window option `@cm_remote` を忠実に
+持たないため marker を window 名へ base32 符号化したのが原因（機能は
+正常＝Mac の 3 セッションを実ミラー）。
+
+**不変制約（実コード確定。`internal/cloud/agent/remotesync.go`
+ReconcileRemote）**:
+1. `MarkedWindows()` は **毎周 tmux から再構築（stateless）**。agent/
+   Manager 再起動でも既存窓を再 adopt＝**runaway 防止の核心**（in-memory
+   マップ単独は不可＝再起動で全窓重複生成）。
+2. reconcile は `stored == attachMarker(pc,sid)` の **厳密文字列一致**。
+   marker は tmux 層に opaque（marker 書式は agent 層のみが知る）。
+3. dedup（同 marker 複窓→1 本維持・余剰 kill）／list 失敗 fail-safe／
+   CAP ガードを保持。
+4. **unix 経路バイト同一**（`mark_unix.go`／`tmux.go` 共有不変＝
+   darwin/linux parity）。psmux 忠実な per-window 可読属性は
+   `#{window_name}` のみ（spike 実証）。
+
+**案 A（却下）**: 窓名=人間可読＋識別子は in-memory map。制約1違反
+（再起動で `MarkedWindows` 空→全窓 runaway）。sidecar 永続化は
+divergence 源を再導入＝stateless 設計の利点を失い却下。
+
+**案 B（推奨・低リスク）**: 窓名 = `<人間ラベル><SEP>cmr1_<base32(marker)>`。
+`<人間ラベル>`＝`NewMarkedWindow` の `name` 引数（既に
+`shortName(d.dir)`＝可読、現状 Windows は無視している）。`markWindow`
+は `rename-window` を「可読ラベル＋区切り＋符号化」へ。`listWindowMarkers`
+/`legacyMarkerlessIDs` は名前中の `cmr1_` トークンを探して base32 復号
+（先頭の可読ラベルはパーサ無視）。
+- 不変条件: marker は依然 name 内に完全保持＝**stateless/再起動耐性・
+  厳密一致・dedup すべて現行同等**。`mark_unix.go`/`tmux.go` 共有は
+  **無改修**＝unix バイト同一（parity）。変更は `mark_windows.go` のみ
+  （windows tag）。
+- 効果: tmux ステータスバーは左から表示＝`↗<dir>` 等の可読部が見え、
+  `cmr1_…` 末尾は幅で切れる。`StyleWindowID` の PC 別背景色（既存）と
+  併せて視認性が実用域に。
+- 限界（正直に）: 完全な無 gibberish ではない（フル窓名には符号化が
+  残る）。可読部が支配的になるだけ。
+
+**案 C（フル・将来）**: tmux Manager API を opaque marker→構造化
+identity(pc,sid) に変更し reconcile を (pc,sid) タプル比較へ。窓名は
+完全可読 `↗<pc> <dir>` 化可能。だが **unix 経路の Manager 署名も変わる
+＝バイト同一を崩す**＋agent 側 reconcile も改修＝blast radius 大。案 B
+で不足な場合のみ。
+
+**検証計画（案 B 実装時・鉄則#2）**: 実 psmux の
+`TestPsmuxMarkerRoundTripAndReconcile` を拡張＝(1) 新名でも marker 厳密
+往復 (2) 窓名が可読ラベルで**始まる** (3) dedup 維持 (4) **新 Manager
+（再起動模擬）で名前から marker 再構築（stateless）**。unix tmux テスト
+不変・3-OS build 緑。実装は `m8-windows-port` への追加 or 新ブランチで
+（main 不触）。
+
+**推奨**: 案 B（低リスク・全不変条件保持・可視部可読）。完全可読名が
+必須なら案 C を別途。
 - **前提条件（ブロッカー）**: 本 PC に Go 未導入（Windows/WSL 共）＝
   M8a 着手前に Windows ネイティブ Go 導入が必須。canonical repo は
   Mac 側（当ディレクトリは git 管理外）＝本書は正リポジトリへ反映する。
