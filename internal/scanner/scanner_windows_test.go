@@ -32,6 +32,50 @@ func TestWinClaudeBaseAndExtractSessionID(t *testing.T) {
 	}
 }
 
+// 実 claude on Windows の実 argv 形（引用符付きフルパス）回帰。
+// CIM の CommandLine は claude ランチャにより `"C:\...\claude.exe"
+// --resume <uuid>` と明示引用符付きで出る。旧 strings.Fields だと
+// fields[0] に引用符が残り winClaudeBase が false になった（M8d
+// follow-up の実バグ）。splitWinCmdline で正しく分割されること。
+func TestSplitWinCmdlineQuotedRealClaudeArgv(t *testing.T) {
+	cases := []struct {
+		name, cmdline, wantBase, wantSID string
+	}{
+		{
+			"quoted-fullpath-resume",
+			`"C:\Users\nokki\.local\bin\claude.exe" --resume cbb99b1c-69cd-4e92-9660-140b9bb5bfd8`,
+			`C:\Users\nokki\.local\bin\claude.exe`,
+			"cbb99b1c-69cd-4e92-9660-140b9bb5bfd8",
+		},
+		{
+			"quoted-path-with-spaces",
+			`"C:\Program Files\claude\claude.exe" --resume 1a2b3c4d-1111-2222-3333-444455556666`,
+			`C:\Program Files\claude\claude.exe`,
+			"1a2b3c4d-1111-2222-3333-444455556666",
+		},
+		{
+			"unquoted-nospace",
+			`C:\tools\claude.exe --resume 9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff`,
+			`C:\tools\claude.exe`,
+			"9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := splitWinCmdline(c.cmdline)
+			if len(f) == 0 || f[0] != c.wantBase {
+				t.Fatalf("split argv[0]=%q want %q (fields=%q)", f[0], c.wantBase, f)
+			}
+			if !winClaudeBase(f[0]) {
+				t.Fatalf("引用符/空白付き実 argv で claude を検出できない: %q", f[0])
+			}
+			if got := extractSessionID(f); got != c.wantSID {
+				t.Fatalf("session id got=%q want=%q", got, c.wantSID)
+			}
+		})
+	}
+}
+
 // 実 CIM(Win32_Process) 列挙＋winClaudeBase で、実際に起動した
 // claude 名プロセスを Scan が検出すること（鉄則#2: 合成でなく実
 // プロセス・実 CIM）。cmd.exe を <temp>\claude.exe に複製して

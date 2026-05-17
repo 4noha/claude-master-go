@@ -51,6 +51,38 @@ func decMarker(name string) (string, bool) {
 	return string(b), true
 }
 
+// applyWindowDisplayFormat は status-bar の窓名表示から marker
+// トークン（` cmr1_<base32>`）を隠す。窓名の**実体は不変**（marker
+// 保持）で `#{window_name}` を読む reconcile（listWindowMarkers）に
+// 一切影響しない＝表示のみ整形。psmux の format 置換
+// `#{s/ cmr1_.*//:window_name}` は実機検証済（raw 名は保持される）。
+// #I=index、#F=flag(*現/-前/空) を残し #W 相当だけ置換名へ。
+// set-option は冪等（EnsureSession 毎回同値）。
+func applyWindowDisplayFormat(m *Manager) {
+	const f = "#I:#{s/ cmr1_.*//:window_name}#F"
+	_, _ = outErr("set-option", "-t", m.Session, "window-status-format", f)
+	_, _ = outErr("set-option", "-t", m.Session,
+		"window-status-current-format", f)
+}
+
+// initialName は new-window -n に渡す初期窓名。windows は marker を
+// **窓名へ符号化**して保持するため、生成時点から `<label><SEP>cmr1_<b32>`
+// を返す。これで marker-less な窓が一瞬も存在せず、MarkedWindows が
+// 生成直後から decode 可＝ReconcileRemote が自分の作った窓を見失わず
+// KEEP する（2 段付与の隙間が「窓無し」誤判定→毎周再作成→legacy
+// 誤殺の自走ストームの真因だった）。marker=="" は素のラベル
+// （NewWindow 等）。markWindow は冪等に同名へ再 rename するだけ。
+func initialName(name, marker string) string {
+	if marker == "" {
+		return name
+	}
+	tok := encMarkerToken(marker)
+	if name != "" {
+		return name + winMarkSep + tok
+	}
+	return tok
+}
+
 // currentName は window_id の現在名（new-window -n が付けた可読ラベル）
 // を返す（psmux 忠実な list-windows -F #{window_name} 経由）。
 func currentName(m *Manager, id string) string {
@@ -111,24 +143,18 @@ func listWindowMarkers(m *Manager) (map[string]string, error) {
 	return res, nil
 }
 
-// legacyMarkerlessIDs は符号化トークンを持たない "↗" リモート窓
-// （旧/取り残し）。
-func legacyMarkerlessIDs(m *Manager) ([]string, error) {
-	o, err := outErr("list-windows", "-t", m.Session, "-F",
-		"#{window_id}=#{window_name}")
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for _, ln := range strings.Split(o, "\n") {
-		i := strings.IndexByte(ln, '=')
-		if i < 0 {
-			continue
-		}
-		id, nm := ln[:i], ln[i+1:]
-		if _, ok := decMarker(nm); !ok && strings.HasPrefix(nm, "↗") {
-			ids = append(ids, id)
-		}
-	}
-	return ids, nil
+// legacyMarkerlessIDs は windows では常に空。
+//
+// 「legacy（@cm_remote 未設定の取り残し）」は unix の per-window
+// option 方式に固有の概念で、windows は marker を**最初から窓名へ
+// 符号化**する単一方式しか存在しない（移行 legacy が無い）。一方で
+// 「符号化トークンを持たない ↗ 窓」を毎 reconcile で kill すると、
+// initialName 以前は new-window→markWindow の隙間に居る**正当な
+// 作成直後の窓を誤殺**し、再作成ストームを自走増幅させていた
+// （実測 12.5s/55 窓の真因の一つ）。initialName で隙間自体を消した
+// 上で、本関数も無効化し増幅器を完全に断つ。重複/消失/余剰の整理は
+// ReconcileRemote の cur(marker decode) ベース kill＋CAP ガードが
+// 厳密に担う（marker は生成直後から decode 可＝確実）。
+func legacyMarkerlessIDs(_ *Manager) ([]string, error) {
+	return nil, nil
 }

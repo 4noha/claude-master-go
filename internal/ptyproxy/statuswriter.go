@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/screen"
@@ -50,6 +51,19 @@ func (s *Server) maybeWriteStatusLocked() {
 		"pid":        s.statusPid,
 		"updated_at": now.Format("2006-01-02 15:04:05"),
 		"is_active":  active,
+	}
+	// Windows は scanner が他プロセスの cwd を解決できず（PEB 読取要・
+	// M8d best-effort）short_dir が "unknown" になる。proxy は自分の
+	// cwd＝ユーザーが claude を起動した場所を確実に知るので、ここで
+	// status へ載せ monitor.WriteStatus の merge で "unknown" を上書き
+	// させる（Web devices.js は short_dir をセッション名に表示）。unix
+	// は scanner(lsof) が解決済＝載せない＝STATUS_FILE バイト不変
+	// （darwin/linux parity 厳守）。
+	if runtime.GOOS == "windows" {
+		if wd, e := os.Getwd(); e == nil && wd != "" {
+			payload["cwd"] = wd
+			payload["short_dir"] = filepath.Base(wd)
+		}
 	}
 	if found {
 		if hasPct {

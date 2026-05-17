@@ -66,6 +66,11 @@ func (m *Manager) EnsureSession() {
 	if !ok("has-session", "-t", m.Session) {
 		out("new-session", "-d", "-s", m.Session, "-n", "dashboard")
 	}
+	// 表示整形は OS-split: unix=no-op（EnsureSession の発行コマンドは
+	// M8 前と完全同一＝darwin/linux バイト同一 parity）／windows=
+	// status-bar の窓名から marker トークン（ cmr1_…）を隠す
+	// （窓名実体は marker 保持＝reconcile 在席判定に一切無影響）。
+	applyWindowDisplayFormat(m)
 }
 
 // SetupDashboard は dashboard ウィンドウで指定コマンドを起動する
@@ -138,8 +143,12 @@ func (m *Manager) LegacyAttachWindows() ([]string, error) {
 // NewMarkedWindow は窓を作り @cm_remote=marker を付けて window_id を
 // 返す（auto-rename off。marker が確実な在席キーになる）。
 func (m *Manager) NewMarkedWindow(name, command, marker string) string {
-	id, nerr := outErr("new-window", "-t", m.Session, "-n", name, "-P",
-		"-F", "#{window_id}", command)
+	// initialName は OS-split: unix=label のみ（marker は markWindow が
+	// @cm_remote へ別設定＝従来とバイト同一・parity）／windows=生成
+	// 時点から marker 符号化名（marker-less な隙間＝reconcile 誤判定＋
+	// legacy-purge 誤殺の真因を消す）。
+	id, nerr := outErr("new-window", "-t", m.Session, "-n",
+		initialName(name, marker), "-P", "-F", "#{window_id}", command)
 	if os.Getenv("CM_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "[tmux] new-window id=%q err=%v\n", id, nerr)
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -128,6 +129,14 @@ func Load() *Config {
 		return def
 	}
 
+	// 同梱 claude バイナリの既定パス。Windows は実体が claude.exe で
+	// proxy の os.Stat は拡張子を補完しないため .exe を付ける。unix
+	// （darwin/linux）は従来値とバイト同一＝parity 維持。
+	realClaudeDef := home(".local/bin/claude")
+	if runtime.GOOS == "windows" {
+		realClaudeDef = home(".local/bin/claude.exe")
+	}
+
 	return &Config{
 		PollInterval:      integer("POLL_INTERVAL", 1, 0, 86400),
 		TmuxSession:       str("TMUX_SESSION", "claude-master"),
@@ -151,7 +160,7 @@ func Load() *Config {
 		StatusFile:  home(".claude-master.status.json"),
 		PidFile:     home(".claude-master.pid"),
 		ConfigFile:  cf,
-		RealClaude:  str("REAL_CLAUDE", home(".local/bin/claude")),
+		RealClaude:  str("REAL_CLAUDE", realClaudeDef),
 		SessionsDir: home(".claude-master/sessions"),
 		PendingFile: home(".claude-master/pending_resumes.json"),
 		RemoteFile:  home(".claude-master/sessions/remote_sessions.json"),

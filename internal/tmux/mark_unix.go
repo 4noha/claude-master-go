@@ -12,6 +12,18 @@ import (
 // @cm_remote）。本ファイルは M8f 前の tmux.go と body バイト同一
 // （darwin/linux parity 厳守。runaway 防止の核心ゆえ挙動不変）。
 
+// applyWindowDisplayFormat は unix では何もしない。unix の窓名は
+// 可読ラベルのみ（marker は per-window option @cm_remote＝名前に
+// 符号化しない）ため status-bar 整形が不要で、EnsureSession の発行
+// コマンドを M8 前と完全同一に保つ（darwin/linux バイト同一 parity）。
+func applyWindowDisplayFormat(_ *Manager) {}
+
+// initialName は new-window -n に渡す初期窓名。unix は marker を
+// per-window option @cm_remote で別途持つため **ラベルそのもの**を返す
+// ＝`new-window -n name` は M8f 前と完全に同一の引数＝挙動バイト同一
+// （darwin/linux parity 厳守。markWindow が従来通り @cm_remote を設定）。
+func initialName(name, _ string) string { return name }
+
 // markWindow は window へ marker を付与（@cm_remote）＋auto-rename off。
 func markWindow(m *Manager, id, marker string) {
 	t := m.Session + ":" + id

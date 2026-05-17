@@ -469,10 +469,13 @@ func runCloudAgent(cfg *config.Config) {
 		wc := func(pc, sid, dir string) string {
 			// 再接続は 30s 間隔（切断時の Cloud Run 再接続＋Firestore
 			// wake 書込のコスト churn を抑制。閲覧復帰は最大 30s 遅延）。
-			return fmt.Sprintf("while true; do env GCP_PROJECT=%s "+
-				"CLOUD_RELAY_URL=%s GOOGLE_APPLICATION_CREDENTIALS=%s "+
-				"%s cloud attach %s --pc %s; sleep 30; done",
-				cfg.GCPProject, cfg.CloudRelayURL, sa, self, sid, pc)
+			// 実体は OS-split: unix=POSIX sh（M8 前とバイト同一＝parity）
+			// ／windows=PowerShell（psmux default-shell=powershell.exe。
+			// POSIX 構文だと pane が即終了→remain-on-exit off で窓が
+			// 生成直後に消滅→reconcile が毎周再作成する runaway storm の
+			// 真因だった。remotecmd_unix.go / remotecmd_windows.go）。
+			return remoteAttachCmd(self, cfg.GCPProject,
+				cfg.CloudRelayURL, sa, sid, pc)
 		}
 		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc)
 	} else {

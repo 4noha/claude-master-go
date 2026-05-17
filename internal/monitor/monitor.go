@@ -215,6 +215,20 @@ func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 				continue
 			}
 			status := readSessionStatus(cfg, s.Pid)
+			// Windows は scanner が他プロセス cwd を解決できず（M8d
+			// best-effort）AddWindow が窓を "unknown" 命名する。proxy が
+			// <pid>.status.json に書く実 short_dir が判明し、窓名がまだ
+			// stale な "unknown"/"unknown-N" の時だけ一度リネームして
+			// 追随する（[PAUSED] 等 limit/resume リネームは cur が
+			// "unknown*" でないので clobber しない）。unix は statuswriter
+			// が short_dir 非出力＋AddWindow が scanner cwd で正名済＝
+			// 条件不成立で no-op＝挙動不変（darwin/linux parity）。
+			if sd, _ := status["short_dir"].(string); sd != "" && sd != "unknown" {
+				if cur := mgr.WindowFor(key); cur == "unknown" ||
+					strings.HasPrefix(cur, "unknown-") {
+					mgr.RenameWindow(key, sd) // RenameWindow が 30 字に切詰
+				}
+			}
 			if ev := w.Check(key, status); ev != nil {
 				handleLimitEvent(cfg, mgr, sch, ev, s, status)
 			} else if sch.IsPending(key) {

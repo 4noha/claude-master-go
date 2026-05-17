@@ -239,3 +239,122 @@ identity(pc,sid) に変更し reconcile を (pc,sid) タプル比較へ。窓名
 - **前提条件（ブロッカー）**: 本 PC に Go 未導入（Windows/WSL 共）＝
   M8a 着手前に Windows ネイティブ Go 導入が必須。canonical repo は
   Mac 側（当ディレクトリは git 管理外）＝本書は正リポジトリへ反映する。
+
+---
+
+## M8g — 実 claude 導入・実環境 runtime 検証＋修正（実装記録）
+
+M8a–f は build 検証主体。**実 claude を Windows へ実導入**したら、build
+では出ない runtime 穴が連鎖発覚。鉄則#1/#2 に従い**全て実環境で実
+再現→修正→実検証**（実 CIM／実 psmux／実 reconcile トレース／実
+proxied claude。合成で緑にしない）。unix は全件バイト同一＝parity 厳守。
+
+### 発覚→修正（実証付き）
+
+1. **scanner 引用符 argv**: 実 claude は `"C:\…\claude.exe" --resume
+   <uuid>`（明示引用符）。`strings.Fields` は引用符を token に残し
+   `winClaudeBase` の `filepath.Base` が `claude.exe"` を返し誤判定＝
+   検出不能（M8d の「実 argv 未確認 follow-up」が顕在化）。
+   `scanner_windows.go` を `splitWinCmdline`（`CommandLineToArgvW` の
+   引用符/バックスラッシュ規則に忠実）へ置換。実 argv 回帰テスト追加
+   （旧コードで落ち新で緑＝鉄則#2）。`scanner_unix.go` 無改修＝parity。
+
+2. **REAL_CLAUDE 既定**: `home(".local/bin/claude")` は `.exe` 無しで
+   実体 `claude.exe` を `os.Stat` 不可＝`proxy` 即「claude が
+   見つかりません」。`config.go` を `runtime.GOOS=="windows"` 時のみ
+   `.exe` 付与（unix は同一文字列＝バイト同一 parity）。
+
+3. **セッション名 unknown**: Windows scanner は他プロセス cwd を
+   PEB 読取要で best-effort 空（M8d）。proxy は自分の cwd を確実に
+   知るので `statuswriter.go` を **windows 限定**で cwd/short_dir を
+   `<pid>.status.json` へ出力→`monitor.WriteStatus` の merge が Web/
+   STATUS の `short_dir` を実フォルダ名に上書き（unix は scanner(lsof)
+   解決済＝非出力＝STATUS バイト不変）。さらに `monitor.go` RunLoop
+   に「proxy 報告 short_dir 判明時、窓名が stale な `unknown`/
+   `unknown-N` の時だけ一度 `RenameWindow`」を追加（`[PAUSED]` 等は
+   clobber せず／unix は status に short_dir 非在＝条件不成立＝no-op
+   ＝parity）。M8e の `ShortDir \`／窓名 cosmetic を解消。
+
+4. **proxy カットオーバー欠落（Web 不出の主因）**: `monitor`
+   `managedOnly` は `<pid>.sock` を持つ proxy 経由 claude のみ STATUS
+   へ。素 `claude` は対象外（ユーザー要望仕様）。Mac は `claude` を
+   claude-wrap で proxy 化済だが Windows 版未設定だった。運用設定
+   （**リポ外**・既存 `cloud-agent.cmd` と同列の環境構築物）:
+   `~/.claude-master/bin\claude.cmd`→`claude-master proxy %*`＋User
+   PATH 前置、`monitor.cmd`、`*.cmd` の ASCII 化（日本語 `rem` を
+   cmd.exe が OEM コードページで誤実行する実バグの修正）。
+
+5. **S4U 常駐（Mac launchd 相当）**: monitor/cloud を Task Scheduler
+   `InteractiveToken` で起動すると、proxied claude の console 制御
+   イベント等で `0xC000013A`(STATUS_CONTROL_C_EXIT) 終了し
+   `RestartOnFailure` も復帰させない脆弱性を実確認（一過性で完全
+   再現は不可だったが「復帰しない」欠陥は確定）。`LogonType=S4U`
+   （Session 0・非対話＝対話 console 非依存・ログオフ耐性・
+   RestartOnFailure 機能）へ。cloud の外向き WSS/Firestore が S4U で
+   疎通することを実ログで実証。運用（リポ外）: タスク
+   `claude-master-monitor`/`-cloud`＋`apply-s4u.ps1`/`apply-winfix.ps1`。
+
+6. **M8f2 リモート窓 runaway storm（真因確定）**: 「tmux 越しの他 PC
+   窓名が base32 で出没を繰り返す」と実報告。仮説（marker truncation
+   ／allow-rename OSC 上書き／重複 agent）を実 psmux で順に**棄却**
+   （psmux は 125 字保持・OSC で窓名非上書き・cloud agent は単一）。
+   読み取り専用プローブで `desired` は安定 8 だが `MarkedWindows()`
+   decode が 0–2 と判明。`CM_DEBUG` で reconcile トレース実取得→
+   `desired=6 cur=0` が毎周＝**全窓が生成直後消滅**。実 psmux で確定:
+   psmux `default-shell=powershell.exe`、cloud agent の `wc` は
+   **POSIX sh 構文**（`while true; do env …; sleep 30; done`）＝
+   powershell で即エラー→pane 終了→`remain-on-exit off` で窓が
+   生成直後に消滅→reconcile `cur=0`→毎周再作成の自走ストーム
+   （実測 12.5s で 55 窓）。修正:
+   `cmd/claude-master/remotecmd_{unix,windows}.go`(新) で `wc` を
+   OS-split — unix=現 POSIX を**同一 `fmt.Sprintf`＝バイト同一
+   parity**／windows=PowerShell（`while ($true){ $env:…; & '<self>'
+   cloud attach …; Start-Sleep -Seconds 30 }`・実 psmux で生存継続
+   実証）。併せて `tmux.go`＋`mark_{unix,windows}.go` に OS-split
+   `initialName`（windows は marker を **`new-window -n` 時点から
+   窓名へ符号化**＝marker-less な隙間消滅／unix はラベルそのまま＝
+   `new-window` 引数バイト同一）、Windows `legacyMarkerlessIDs`→nil
+   （Windows に @cm_remote 移行 legacy 概念は無く、in-flight 窓を
+   毎 reconcile 誤殺する増幅器だった）。検証: トレース
+   `desired=6 cur=6` 毎周 **KEEP**・CREATE 0／実 psmux で window_id
+   固定・churn 全停止。
+
+7. **marker 表示整形（案 B の「限界」を解消）**: 案 B は「フル窓名に
+   符号化が残る／可読部が支配的になるだけ」が限界だったが、psmux が
+   `#{s/regex/repl/:window_name}` 形式置換と `window-status-format`
+   を**サポート**することを実検証。`EnsureSession` に OS-split
+   `applyWindowDisplayFormat` を追加: windows のみ
+   `window-status-format`/`-current-format` を
+   `#I:#{s/ cmr1_.*//:window_name}#F` に設定＝**status-bar 表示から
+   marker トークンを完全除去**。`#{window_name}` の**実体は marker
+   保持**＝`listWindowMarkers`/reconcile に一切無影響（実 psmux で
+   raw 保持＋storm 非回帰を実証）。unix=空 body＝`EnsureSession` 発行
+   コマンド M8 前と同一＝バイト同一 parity。→ **案 C は不要**（案 B
+   ＋表示置換で完全可読・unix 無影響を両立）。
+
+### parity 担保（機械確認）
+
+- `GOOS=windows/linux/darwin go build ./...` 全緑、`go vet` は触れた
+  package 警告なし（`cmd/.../main.go:353/369` lostcancel は M8 前から
+  linux でも出る既存・未変更・スコープ外）。
+- `git diff` で unix 影響ファイルを確認: `mark_unix.go`=既存 3 関数
+  無改修＋追加関数（`initialName` は `return name`／
+  `applyWindowDisplayFormat` は空 body）のみ＝`EnsureSession`/
+  `new-window` の unix 発行コマンド不変。`remotecmd_unix.go`=M8 前
+  inline と同一 `fmt.Sprintf`・同一引数順＝生成文字列バイト同一。
+  `config.go`/`statuswriter.go`/`monitor.go` の windows 分岐は
+  `runtime.GOOS`／build-tag ガードで unix 実行パス不変。
+
+### 残作業（要 Mac canonical・本 PC 不可）
+
+darwin/linux 全 `go test ./...`（実 pty/socket/tmux・resume-burst
+display-oracle）の parity 実走／cloud 実 GCP WSS e2e。Windows
+runtime は M8a–M8g 全て本 PC 実環境で実テスト緑。
+
+### Windows インストール導線（未整備＝follow-up）
+
+M8g の運用設定（`claude.cmd` シム／`monitor.cmd`／`cloud-agent.cmd`
+／S4U タスク／User PATH／`apply-*.ps1`）は**デバッグ過程で手組み
+した暫定物**でリポ外。`install.sh`（unix ワンライナー）に相当する
+**Windows 一括インストーラ（PowerShell `install.ps1` 等）は未整備**
+＝別 follow-up（goreleaser の windows/amd64・arm64 asset 化も併せて）。

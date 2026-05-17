@@ -11,6 +11,61 @@ import (
 	"time"
 )
 
+// splitWinCmdline は Windows の CommandLine 文字列を argv へ分割する
+// （CommandLineToArgvW の引用符/バックスラッシュ規則に忠実。実 claude は
+// `"C:\path\claude.exe" --resume <uuid>` と**明示引用符付き**で起動され、
+// strings.Fields だと引用符が token に残り winClaudeBase が誤判定する
+// ＝M8d follow-up で顕在化した実バグの修正）。ヒューリスティックではなく
+// Windows 標準の字句規則そのもの（不変条件: 内容推測しない）。
+func splitWinCmdline(s string) []string {
+	var args []string
+	var cur []rune
+	inQuote := false
+	bs := 0 // 直前に連続したバックスラッシュ数
+	flushBS := func(beforeQuote bool) {
+		if beforeQuote {
+			for i := 0; i < bs/2; i++ {
+				cur = append(cur, '\\')
+			}
+		} else {
+			for i := 0; i < bs; i++ {
+				cur = append(cur, '\\')
+			}
+		}
+		bs = 0
+	}
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		c := rs[i]
+		switch {
+		case c == '\\':
+			bs++
+		case c == '"':
+			if bs%2 == 1 { // 2n+1 個の \ → リテラル "
+				flushBS(true)
+				cur = append(cur, '"')
+			} else { // 2n 個 → " は引用符トグル
+				flushBS(true)
+				inQuote = !inQuote
+			}
+		case (c == ' ' || c == '\t') && !inQuote:
+			flushBS(false)
+			if len(cur) > 0 {
+				args = append(args, string(cur))
+				cur = cur[:0]
+			}
+		default:
+			flushBS(false)
+			cur = append(cur, c)
+		}
+	}
+	flushBS(false)
+	if len(cur) > 0 {
+		args = append(args, string(cur))
+	}
+	return args
+}
+
 // winClaudeBase は argv[0] が claude かを **完全一致**で判定する
 // （ヒューリスティック内容推測はしない＝不変条件遵守）。Windows パスは
 // `\`・拡張子付き（claude.exe/.cmd/.bat）なので basename を正規化。
@@ -59,7 +114,9 @@ func Scan(includeVSCode bool) ([]ClaudeSession, error) {
 		if cmdline == "" {
 			continue
 		}
-		fields := strings.Fields(cmdline)
+		// strings.Fields ではなく Windows 字句規則で分割（引用符付き
+		// フルパス argv[0] を正しく 1 token 化＝実 claude 検出の要）。
+		fields := splitWinCmdline(cmdline)
 		if len(fields) == 0 || !winClaudeBase(fields[0]) {
 			continue
 		}
