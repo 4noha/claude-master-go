@@ -289,6 +289,27 @@ func processStdin(w *connW, cfg *config.Config, keys map[string]int,
 		}
 		return false, nil
 	}
+	// IMG_PASTE_KEY（既定 off。nil=無効）: ローカル機のクリップボードに
+	// 画像があれば term.js と同一の IMAGE フレームで送出（サーバが remote
+	// クリップボードへ載せ Ctrl+V 注入）。画像が無ければトリガキーを
+	// そのまま claude へ素通し＝Ctrl-V 等の通常動作を壊さない。nav-mode
+	// 中は上で return 済（読書中は無効）。判定は NAV_KEY と同じ
+	// Contains→ReplaceAll パターン。
+	if cfg.ImgPasteKey != nil && bytes.Contains(data, cfg.ImgPasteKey) {
+		if img, code, ok := readClipImage(); ok {
+			if e := w.sendImage(img, code); e != nil {
+				return false, e
+			}
+			rest := bytes.ReplaceAll(data, cfg.ImgPasteKey, nil)
+			if len(rest) > 0 {
+				if e := w.write(rest); e != nil {
+					return false, e
+				}
+			}
+			return false, nil
+		}
+		// 画像無し: 下の通常転送へフォールスルー（data を素通し）
+	}
 	if e := w.write(data); e != nil {
 		return false, e
 	}

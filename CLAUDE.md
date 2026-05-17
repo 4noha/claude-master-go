@@ -179,7 +179,7 @@ nav-mode/PAGEKEY/WHEEL は「キーが pty まで届く」のが前提。届か�
 | config.py | `internal/config` | ✅ M1。env > ~/.claude-master.toml > 既定。NAV_KEY パーサ移植・実 toml で Python と全項目一致 |
 | pty_scroll.py / pty_emulator.py | `internal/screen` | ✅ M2(山場)。自前 VT モデル（vt10x/x/vt はデータで棄却）＋ history.top ＋ 先頭アンカー ＋ render_viewport。✅ M4c HistoryFlusher/line_to_text/IsLiveResetKey/ClassifyWheel |
 | pty_proxy.py | `internal/ptyproxy` | ✅ M3 creack/pty fork+exec＋unix socket 多重化＋RESIZE/SCROLL。✅ M4b `HandleHostInput`（host nav/pagekey/wheel）＋ M4c `SESSION_LOG` |
-| socket_client.py | `internal/client` | ✅ M5c unix socket + x/term raw・client 側 nav/pagekey/wheel（分類器は M4 共有）・実 socket→Server pan を display-oracle 検証 |
+| socket_client.py | `internal/client` | ✅ M5c unix socket + x/term raw・client 側 nav/pagekey/wheel（分類器は M4 共有）・実 socket→Server pan を display-oracle 検証。✅ クリップボード・ブリッジ（tmux/端末→リモート画像貼付）: `IMG_PASTE_KEY`/toml `img_paste_key`（既定 off・nil）。設定キー押下で macOS のクリップボード画像を osascript で取得し term.js と同一 IMAGE フレーム(`0xff 0xfd|u32 len|u8 code|payload`)を送出＝**サーバ無改変**で `handleImagePaste` 経路を再利用。画像無し時はキーを素通し（Ctrl-V 通常動作維持）。`readClipImage` seam で実 GUI 非汚染テスト。実キーパス e2e（実 socket→実 Server→setClip）＋ manual タグの実クリップボード回帰で検証 |
 | process_scanner.py | `internal/scanner` | ✅ M5a ps/lsof・実環境 5 セッション実検出。**lsof ロケール注意**: launchd は LANG/LC_* 未設定＝C ロケールで lsof が非ASCII cwd を文字列 `\xNN` に化かす（U+2010 ハイフン等を含むパス破損）。`getCwdLsof` は UTF-8 ロケール強制＋`unescapeLsof` の二重防御で実バイト復元 |
 | tmux_manager.py | `internal/tmux` | ✅ M5b 実 tmux 隔離セッション CRUD |
 | monitor.py | `internal/monitor` | ✅ M5d-2 scan 差分→tmux 同期＋start/stop/status＋最小 dashboard。limit_watcher/resume_scheduler は M5e |

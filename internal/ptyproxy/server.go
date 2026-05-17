@@ -110,6 +110,15 @@ func (s *Server) Serve(sockPath string) error {
 
 func (s *Server) Done() <-chan struct{} { return s.done }
 
+// SetClipFunc は画像クリップボード seam を差し替える（テスト/統合での
+// 実クリップボード非汚染・受領検証用。既定は setMacClipboardImage）。
+// 内部の unexported seam をパッケージ跨ぎ実キーパステストへ最小公開。
+func (s *Server) SetClipFunc(fn func(path, ext string) error) {
+	if fn != nil {
+		s.setClip = fn
+	}
+}
+
 // SetHostSize は host 端末サイズを更新し即再描画（SIGWINCH 時）。
 func (s *Server) SetHostSize(cols, rows int) {
 	s.mu.Lock()
