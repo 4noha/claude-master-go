@@ -1,3 +1,7 @@
+//go:build !windows
+
+// agent_test.go と同一の POSIX e2e スイート（共有ヘルパ projectID 等を
+// 使用）。Windows での cloud e2e は M8f。
 package agent
 
 import (

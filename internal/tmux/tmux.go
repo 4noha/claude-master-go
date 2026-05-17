@@ -40,24 +40,9 @@ func CheckTmux() error {
 	return err
 }
 
-// shquote は POSIX シェル単引用（Python shlex.quote 相当）。
-func shquote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	safe := true
-	for _, r := range s {
-		if !(r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '@' ||
-			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			safe = false
-			break
-		}
-	}
-	if safe {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}
+// shquote / interactiveShell は OS 依存（Windows シェル流クォート・
+// 対話シェル起動）のため build-tag 分割: quote_unix.go（POSIX・M8e
+// 前と body バイト同一＝darwin/linux parity）/ quote_windows.go。
 
 // Manager は tmux セッション/ウィンドウを管理（Python TmuxManager）。
 // 識別キー（session_id 等）→ window 名のマップを保持。monitor から
@@ -138,53 +123,16 @@ const remoteOpt = "@cm_remote"
 // 重複窓も別個に列挙＝runaway 重複の自己修復が可能。list 失敗は error を
 // 返し「窓ゼロ」と誤認させない（runaway 防止の核心）。
 func (m *Manager) MarkedWindows() (map[string]string, error) {
-	// 区切りは TAB 不可（tmux -F は非 tty 出力で literal TAB を落とすため
-	// runaway の真因だった）。id=@\d+ / marker="cloud attach …" の双方に
-	// 出現しない印字可能文字 '=' を区切りに使う。
-	o, err := outErr("list-windows", "-t", m.Session, "-F",
-		"#{window_id}=#{"+remoteOpt+"}")
-	if err != nil {
-		return nil, err
-	}
-	res := map[string]string{}
-	if o == "" {
-		return res, nil
-	}
-	for _, ln := range strings.Split(o, "\n") {
-		i := strings.IndexByte(ln, '=')
-		if i < 0 {
-			continue
-		}
-		id, mark := ln[:i], ln[i+1:]
-		if id != "" && mark != "" {
-			res[id] = mark
-		}
-	}
-	return res, nil
+	// 実体は OS-split（unix=@cm_remote per-window option／windows=
+	// window 名 base32 符号化）。mark_unix.go / mark_windows.go。
+	return listWindowMarkers(m)
 }
 
 // LegacyAttachWindows は @cm_remote 未設定だが pane_start_command に
 // "claude-master cloud attach" を含む旧 runaway 窓の id を返す
 // （新方式移行後の一掃用。list 失敗は error）。
 func (m *Manager) LegacyAttachWindows() ([]string, error) {
-	// @cm_remote 無し かつ 窓名が "↗"（リモート窓の命名）= set 失敗等の
-	// 取り残し。pane_start_command は '=' を含むので使わず name で判定。
-	o, err := outErr("list-windows", "-t", m.Session, "-F",
-		"#{window_id}=#{"+remoteOpt+"}=#{window_name}")
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for _, ln := range strings.Split(o, "\n") {
-		p := strings.SplitN(ln, "=", 3)
-		if len(p) < 3 {
-			continue
-		}
-		if p[1] == "" && strings.HasPrefix(p[2], "↗") {
-			ids = append(ids, p[0])
-		}
-	}
-	return ids, nil
+	return legacyMarkerlessIDs(m) // 実体 OS-split（mark_unix.go / mark_windows.go）
 }
 
 // NewMarkedWindow は窓を作り @cm_remote=marker を付けて window_id を
@@ -196,12 +144,7 @@ func (m *Manager) NewMarkedWindow(name, command, marker string) string {
 		fmt.Fprintf(os.Stderr, "[tmux] new-window id=%q err=%v\n", id, nerr)
 	}
 	if id != "" {
-		t := m.Session + ":" + id
-		_, e1 := outErr("set-option", "-w", "-t", t, remoteOpt, marker)
-		_, e2 := outErr("set-option", "-w", "-t", t, "automatic-rename", "off")
-		if os.Getenv("CM_DEBUG") != "" && (e1 != nil || e2 != nil) {
-			fmt.Fprintf(os.Stderr, "[tmux] set-option @cm_remote err=%v automatic err=%v\n", e1, e2)
-		}
+		markWindow(m, id, marker) // 実体 OS-split（mark_unix.go / mark_windows.go）
 	}
 	return id
 }
@@ -258,15 +201,7 @@ func (m *Manager) AddWindow(s scanner.ClaudeSession, socketPath string) string {
 	if socketPath != "" {
 		cmd = m.socketCmd(socketPath)
 	} else {
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/zsh"
-		}
-		if s.Cwd != "" {
-			cmd = "cd " + shquote(s.Cwd) + " && exec " + shell
-		} else {
-			cmd = "exec " + shell
-		}
+		cmd = interactiveShell(s.Cwd)
 	}
 	out("new-window", "-t", m.Session, "-n", name, cmd)
 	m.keyToWindow[s.Key()] = name

@@ -4,3 +4,10 @@
 *.test
 *.out
 .DS_Store
+
+# Claude Code のマシンローカル設定（bypassPermissions 等＝共有リポに入れない）
+/.claude/settings.local.json
+
+# Windows ビルド成果物 / PoC スクラッチ
+/claude-master.exe
+/tmp/

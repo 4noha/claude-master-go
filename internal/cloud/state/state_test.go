@@ -1,3 +1,7 @@
+//go:build !windows
+
+// gcloud Firestore エミュレータをプロセスグループ単位で起動/掃除する
+// 実 API e2e（POSIX 専用）。Windows での cloud e2e は M8f で扱う。
 package state
 
 import (

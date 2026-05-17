@@ -1,3 +1,9 @@
+//go:build !windows
+
+// 実 `ps aux`/`lsof`/`sleep` で純パーサ＋Scan/getCwdLsof を検証する
+// unix 専用テスト。Windows の scanner 検証は scanner_windows_test.go
+// （実 CIM 列挙＋共有純パーサ）。Mac/linux では従来通り全実行＝
+// parity 無影響（他環境クリーン）。
 package scanner
 
 import (

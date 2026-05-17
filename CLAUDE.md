@@ -13,8 +13,117 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
 - マイルストーン: **M1 config ✅** / **M2 VT モデル ✅** / **M3 ptyproxy ✅** /
   **M4 nav・pagekey・wheel・SESSION_LOG ✅** /
   **M5 monitor・tmux・socket_client・実行可能 proxy ✅（完全）** /
-  **M6 GCP 同期（設計確定: `DESIGN_M6.md`。実装中）**。各 M は build＋
+  **M6 GCP 同期（設計確定: `DESIGN_M6.md`。実装中）** /
+  **M8 Windows ネイティブ移植（`DESIGN_M8.md`。M8a ✅ seam OS-split／
+  M8b ✅ ConPTY backend〔UserExistsError/conpty・実テスト緑〕／M8c
+  ✅〔IPC=AF_UNIX 据置実証＝shared 変更ゼロ・resize source 実装・実
+  ConPTY proxy⇔AF_UNIX client 統合テスト緑〕／M8d ✅〔scanner OS-split・
+  実 CIM 検出テスト緑・cwd 等 best-effort〕／M8e ✅〔monitor の tmux 経路を
+  実 psmux で検証緑・tmux.go POSIX シェル構築 OS-split・psmux 非忠実
+  workaround は M8f へ再スコープ〕／M8f〔(1)selfupdate Windows 原子置換
+  ✅ (2)psmux backend ✅ (3)cloud 実 GCP e2e=要 Mac〕。**本 PC 検証可能
+  な Windows 移植は M8a–M8f(2) 全て実テスト緑・unix バイト同一＝
+  parity。残=Mac canonical 反映/全 go test parity/cloud 実 GCP e2e**）**。
+  各 M は build＋
   実録画/実環境テスト緑で前進（合成では緑判定しない）。
+  - **M8 Windows 移植（設計確定: `DESIGN_M8.md`。M8a ✅）**: 単一リポ
+    ＋build tag の OS-split（フォークしない＝VT コア/回帰 fixtures は
+    共有資産）。設計の OS 結合点は DESIGN_M8.md（pty→ConPTY、IPC unix
+    socket→named pipe〔fd 渡し非使用確認済〕、SIGWINCH→コンソール
+    resize、ps/lsof→Toolhelp32、`syscall.Kill`→`OpenProcess`/
+    `TerminateProcess`、setsid→DETACHED_PROCESS、tmux は Windows
+    非対応＝graceful degrade）。`internal/screen/*`〔VT 山場〕は OS
+    非依存で移植不要。
+    - **M8a ✅（Go go1.26.3 導入: Windows `~/go-sdk`・User PATH 永続）**:
+      実コンパイル阻害は実測 **3 ファイル5箇所のみ**だった（`pty.*`/
+      `net "unix"`/`ps`/`lsof`/`tmux` exec は Windows でもコンパイル可
+      ＝それらの **runtime** 対応は M8b–d）。OS-split seam 実装:
+      `ptyproxy.childSysProcAttr`・`client.watchResize`・
+      `monitor.detachSysProcAttr/procAlive/procTerminate`・
+      `main.notifyWinch`（各 `_unix.go`/`_windows.go`）＋ cloud e2e
+      `_test.go` 4 本を `!windows` タグ化（POSIX エミュレータ専用＝
+      Mac/linux では従来通り実行＝parity 無影響）。**検証（機械確認）**:
+      `GOOS=windows/linux/darwin go build ./...` 全緑、windows vet ==
+      linux vet（M8a 由来差分ゼロ）、OS 非依存共有コア
+      `internal/screen`〔VT〕・`internal/config` は windows host
+      `go test` 緑。**未検証（要 Mac canonical）**: darwin/linux 全
+      `go test ./...`（実 pty/socket/tmux・`resume-burst`
+      display-oracle）は本 PC で実行不可＝Mac 正環境で要 parity 実行。
+      **既存・スコープ外**: `cmd/claude-master/main.go:353/369` の
+      lostcancel vet 警告は M8a 前から linux でも出る既存
+      （`runCloudEnroll`・未変更）＝M8a では触れない（鉄則#1）。
+    - **M8b ✅ ConPTY backend**: PoC で生 x/sys 直叩きは子が
+      pseudoconsole 非 attach＝脆いと実証→`UserExistsError/conpty`
+      採用。`proxy.go` を backend IF 化（`master`=`io.ReadWriteCloser`）
+      ＋`proxy_unix.go`〔creack/pty・旧 proxy.go とバイト同一＝parity〕
+      ＋`proxy_windows.go`〔conpty〕。**実挙動知見**: ConPTY は
+      バイト透過でなく再レンダリング＝unix resume-burst pyte しきい値は
+      Windows 直接適用不可（Windows 用 ConPTY フィクスチャは将来）。
+      ConPTY は子終了で master を EOF しない（pseudoconsole 保持）＝
+      run.go の `<-srv.Done()` ハング非互換を winBackend 内
+      `cpty.Wait→Close` で unix 同等意味論に橋渡し。実 `cmd.exe`→
+      ConPTY→Start→PumpToVT→screen.VT を `TestConPTYRealProgram_
+      FeedsVTModel` で機械確認（3-OS build 緑）。unix 録画テストは
+      `!windows` タグ化＝Mac/linux 従来通り（parity 無影響）。
+    - **M8c ✅（手動項目除く）**: IPC は Windows で
+      `net.Listen/Dial("unix")` 双方向＋stale 除去＋再 listen が実使用
+      パターンで PASS と実測＝**named pipe 不要・shared コード変更
+      ゼロ**（他環境最クリーン）。Windows コンソール resize source を
+      `resize_windows.go` に polling 実装（`watchResize()` 署名不変＝
+      client.go/resize_unix.go 変更ゼロ）・`TestPollResize` PASS。
+      **統合 `TestConPTYProxyOverAFUnix_ClientReceivesRender` PASS**＝
+      実 ConPTY proxy→`server.go` AF_UNIX listener→`net.Dial(unix)`
+      client→再パース描画で M8C_OK 受信（Windows e2e）。
+      `client_test.go`（/bin/sh・/tmp 依存）は `!windows` タグ化
+      （Mac/linux 従来通り＝parity）。**残（手動/follow-up）**: 対話的
+      コンソール resize→再描画は実端末必須（harness 不可・鉄則#2
+      honest）／host 側 `notifyWinch` Windows polling。
+    - **M8d ✅**: `scanner.go`=共有純パーサ（型/parsePSLine/
+      extractSessionID/splitWSN/unescapeLsof）／`scanner_unix.go`=
+      ps+lsof（M8d 前とバイト同一＝parity）／`scanner_windows.go`=
+      CIM(Win32_Process) で PID＋CommandLine 列挙→共有 extractSessionID
+      /winClaudeBase（exact-match・非ヒューリスティック）。実 CIM で実
+      claude 名プロセス検出を `TestScanDetectsRealClaudeNamedProcess`
+      PASS。cwd は Windows で他プロセス PEB 読取要＝best-effort 空・
+      StartTime/CPU/Mem 省略（同期に不要）。`scanner_test.go`(ps/lsof/
+      sleep)は `!windows` タグ化＝Mac/linux 従来通り（parity）。実
+      claude on Windows の argv 形は claude 未導入で未確認＝follow-up。
+    - **M8e ✅**: 実コード確定で**再スコープ**＝monitor が呼ぶ tmux は
+      EnsureSession/AddWindow/ListWindows(#{window_name})/WindowFor/
+      RenameWindow/RemoveWindow のみ＝psmux 忠実機能だけで成立。psmux
+      非忠実(@cm_remote/pane_current_command)依存の MarkedWindows/
+      IsSocketClientRunning は cloud agent 専用＝**M8f へ移動**。tmux.go
+      の POSIX シェル構築（`shquote`/`interactiveShell`）を OS-split
+      （`quote_unix.go` は body バイト同一＝parity／`quote_windows.go`）。
+      `TestMonitorTmuxPathOnRealPsmux` PASS（実 psmux で当該全メソッド）。
+      monitor/tmux の unix テストは `!windows` タグ化（Mac/linux 不変）。
+      残(follow-up): monitor CmdStart/Stop/Status の Windows e2e smoke／
+      `ShortDir` の `\` 非対応(cosmetic)。
+    - **M8f**: **(1) selfupdate 原子置換 ✅**＝`replaceSelf` 末尾を
+      OS-split（`place_unix.go`=直接 rename・byte 同一＝parity／
+      `place_windows.go`=実行中 exe を `.old` 退避→新配置→best-effort
+      削除）。`TestPlaceBinaryReplacesRunningExe` PASS（実行中実 exe）。
+      **(2) psmux backend ✅**＝cloud agent reconcile 依存の marker 機構
+      を OS-split。`mark_unix.go`=現行 `@cm_remote` set-option/
+      list-windows を **body バイト同一**＝parity／`mark_windows.go`=
+      psmux 忠実プリミティブ（rename-window/`#{window_name}`/window_id）
+      のみで marker を **window 名 base32 符号化**（exact-match 復号＝
+      非ヒューリスティック）。`MarkedWindows`/`NewMarkedWindow`/
+      `LegacyAttachWindows` は薄い委譲化。`TestPsmuxMarkerRoundTrip
+      AndReconcile` PASS（実 psmux で marker 厳密往復・dup 列挙・kill
+      反映）。`IsSocketClientRunning` は cloud 非依存(M8e 確認済)。
+      cosmetic: Windows のリモート窓表示名は符号化名（機能は保持）。
+      **(3) cloud 実 GCP e2e=要 Mac**＝build 緑(M8a)・AF_UNIX(M8c)・
+      tmux marker psmux 忠実(M8f2)。残るは実 GCP WSS e2e（SA 鍵/
+      Cloud Run/Firestore 実環境要）＝本 PC 不可＝Mac canonical で実施
+      （M6e 同様）。
+    - **本 PC 検証可能な Windows 移植は M8a–M8f(2) 全て実テスト緑・
+      unix バイト同一（他環境 parity）**。残作業（全て要 Mac canonical）:
+      ①当 dir は git 外＝M8a–f 差分/DESIGN_M8.md を正リポジトリへ反映
+      ②darwin/linux 全 `go test ./...`（実 pty/socket/tmux・
+      resume-burst display-oracle）parity 実走 ③cloud 実 GCP WSS e2e
+      ④既存 `cmd/.../main.go:353` lostcancel(M8 前から linux でも出る・
+      スコープ外)。開発は Windows ネイティブ Claude 主・WSL 従。
   - M6 設計確定: wake=Firestore listener（FCM 不採用＝デスクトップ常駐
     向き・near-$0・PC 発 NAT 越え）、データ線=Cloud Run WSS で既存
     RESIZE/SCROLL/frame protocol をトンネル（`internal/client` 再利用・

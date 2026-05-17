@@ -1,3 +1,9 @@
+//go:build !windows
+
+// 実 /bin/cat ＋実録画(resume-burst)で pyte parity を機械確認する unix
+// 専用テスト。Windows の ConPTY 実テストは proxy_conpty_windows_test.go
+// （ConPTY はバイト透過でなく再レンダリングするため unix 録画しきい値は
+// 直接適用不可＝DESIGN_M8）。Mac/linux では従来通り全実行＝parity。
 package ptyproxy
 
 import (

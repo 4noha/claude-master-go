@@ -1,3 +1,7 @@
+//go:build !windows
+
+// limit_watcher/resume の unix 専用テスト（testMgr を monitor_test.go と
+// 共有＝両方 !windows で一貫）。Mac/linux 従来通り＝parity（他環境クリーン）。
 package monitor
 
 import (

@@ -1,3 +1,9 @@
+//go:build !windows
+
+// 実 ptyproxy.Start(/bin/sh 等)＋unix socket(/tmp)で nav/pagekey/wheel/
+// 再接続を検証する unix 専用テスト。Windows の client 側検証は
+// resize_windows_test.go（pollResize）＋ M8c 統合テスト。Mac/linux では
+// 従来通り全実行＝parity 無影響（他環境クリーン）。
 package client
 
 import (

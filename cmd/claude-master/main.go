@@ -118,8 +118,7 @@ func runProxy(args []string) {
 			restore = func() { _ = term.Restore(int(os.Stdin.Fd()), st) }
 		}
 	}
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGWINCH)
+	sig, stopWinch := notifyWinch()
 
 	code, err := ptyproxy.RunProxy(ptyproxy.ProxyOpts{
 		Argv:     append([]string{cfg.RealClaude}, args...),
@@ -129,7 +128,7 @@ func runProxy(args []string) {
 		WinSize:  winSize,
 		Sigwinch: sig,
 	})
-	signal.Stop(sig)
+	stopWinch()
 	if restore != nil {
 		restore()
 	}

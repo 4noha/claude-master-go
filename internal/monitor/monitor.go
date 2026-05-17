@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/config"
@@ -272,7 +271,7 @@ func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	return syscall.Kill(pid, 0) == nil
+	return procAlive(pid)
 }
 
 // CmdStart はデーモンを背後起動（Python cmd_start）。多重起動は PID
@@ -316,7 +315,7 @@ func CmdStop(cfg *config.Config, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "PID ファイルが不正（削除しました）")
 		return nil
 	}
-	if syscall.Kill(pid, syscall.SIGTERM) != nil {
+	if procTerminate(pid) != nil {
 		_ = os.Remove(cfg.PidFile)
 		fmt.Fprintln(stdout, "プロセスが見つかりません（PIDファイルを削除しました）")
 		return nil

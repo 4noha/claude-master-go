@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -152,11 +150,10 @@ func RunConn(conn net.Conn, cfg *config.Config) error {
 	w := &connW{c: conn}
 	w.sendResize(fd)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGWINCH)
-	defer signal.Stop(sig)
+	rz, stopRz := watchResize()
+	defer stopRz()
 	go func() {
-		for range sig {
+		for range rz {
 			w.sendResize(fd)
 		}
 	}()
