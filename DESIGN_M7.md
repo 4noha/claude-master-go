@@ -204,12 +204,17 @@ SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テス
   proxy 側 `parseClientInput` の scrollMagic 処理は `WheelScroll`
   config 非依存で常時有効＝relay 越し Web でもそのまま効く。
 - **スマホ タッチ縦ドラッグ→スクロール**: `#term` の touchstart/move/
-  end を捕捉し、縦移動が横より優位（|Δy|>12 かつ |Δy|>|Δx|）になった
+  end を捕捉し、縦移動が横より優位（|Δy|>10 かつ |Δy|>|Δx|）になった
   時だけ縦ドラッグ確定→以降 preventDefault（ページスクロール/pull-to-
-  refresh 抑止）し `TOUCH_ROW_PX`(16px)/行で `doScroll` 送出。指↓=過去
-  （dy 負）/指↑=新しい（dy 正）＝tmux copy-mode と同じ自然方向（content
-  が指に追従）。横優位の間は何もせず横スワイプ（コンソール切替＝
-  setupSwitch）に委譲＝方向で完全分離（衝突無し）。多点タッチは無視。
+  refresh 抑止）。指↓=過去（dy 負）/指↑=新しい（dy 正）＝tmux
+  copy-mode と同じ自然方向。横優位の間は横スワイプ（コンソール切替＝
+  setupSwitch）へ委譲＝方向で完全分離。多点タッチ無視。
+  **追従性・スクロール量の改善**: ①行高は固定でなく実測
+  （`term.element.clientHeight ÷ term.rows`、ジェスチャ毎に `measureRow`
+  でリサイズ追随。測れなければ `TOUCH_FALLBACK_PX`=18）＝指1:1追従。
+  ②touchmove 毎に SCROLL を送ると relay 往復が詰まり遅延・カクつくた
+  め、ピクセルを `pendPx` に蓄積し **requestAnimationFrame で 1
+  フレーム1回だけ**正味行数を一括 `doScroll`。touchend で端数も flush。
 
 ### RESIZE 送信に関する重要な訂正（誤診→撤回）
 

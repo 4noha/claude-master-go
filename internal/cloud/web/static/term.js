@@ -33,7 +33,7 @@ const SCROLL_STEP = 3;       // ホイール 1 ノッチあたり行
 const PAGE_STEP = 10;        // PageUp/PageDown 1 回あたり行
 const FOLLOW_DY = 32767;     // live（最下部）復帰
 const TOP_DY = -32768;       // 最古へ（Home 相当・clamp16 と同値）
-const TOUCH_ROW_PX = 16;     // 指の縦移動 何px で 1 行スクロールするか
+const TOUCH_FALLBACK_PX = 18; // 1 行 px が測れない時の保険
 function scrollFrame(dy) {
   const v = dy & 0xffff;     // int16 二の補数 下位16bit
   return new Uint8Array([0xff, 0xfe, (v >> 8) & 0xff, v & 0xff]);
@@ -177,12 +177,34 @@ function run() {
   // ページスクロール/pull-to-refresh を抑止）。指を下げる=過去を見る
   // ＝SCROLL 負（content が指に追従。tmux copy-mode と同じ自然方向）。
   const thost = $("term");
-  let tx0 = 0, ty0 = 0, tly = 0, tact = false, tvert = false, tacc = 0;
+  let tx0 = 0, ty0 = 0, tly = 0, tact = false, tvert = false;
+  let pendPx = 0, rowPx = TOUCH_FALLBACK_PX, rafQ = false;
+  // 実際の 1 行ピクセル高（端末要素高 ÷ 行数）。固定値だと指と
+  // スクロール量がズレて追従が悪い。指の移動量 = 行高 ×行数 で
+  // 1:1 追従させる。ジェスチャ開始時に都度算出（リサイズ追随）。
+  const measureRow = () => {
+    const r = term.rows || 24;
+    const h = (term.element && term.element.clientHeight) || 0;
+    rowPx = h > 0 ? h / r : TOUCH_FALLBACK_PX;
+  };
+  // 蓄積ピクセルを行へ変換し **1 フレーム 1 回だけ** SCROLL 送出
+  // （touchmove 毎に送ると relay 往復が詰まり遅延・カクつく＝追従悪化。
+  // requestAnimationFrame で集約し正味移動量を一括反映＝滑らか）。
+  const flush = () => {
+    rafQ = false;
+    if (!tvert) return;
+    const rows = (pendPx / rowPx) | 0; // 切り捨て・符号保持
+    if (rows !== 0) {
+      pendPx -= rows * rowPx;
+      doScroll(-rows); // 指↓(rows>0)=過去=負 / 指↑=新しい=正
+    }
+  };
   thost.addEventListener("touchstart", (e) => {
     if (e.touches.length !== 1) { tact = false; return; }
     const t = e.touches[0];
     tx0 = t.clientX; ty0 = t.clientY; tly = t.clientY;
-    tact = true; tvert = false; tacc = 0;
+    tact = true; tvert = false; pendPx = 0;
+    measureRow();
   }, { passive: true });
   thost.addEventListener("touchmove", (e) => {
     if (!tact || e.touches.length !== 1) return;
@@ -195,22 +217,20 @@ function run() {
     const t = e.touches[0];
     const totDx = t.clientX - tx0, totDy = t.clientY - ty0;
     if (!tvert) {
-      if (Math.abs(totDy) > 12 && Math.abs(totDy) > Math.abs(totDx)) {
+      if (Math.abs(totDy) > 10 && Math.abs(totDy) > Math.abs(totDx)) {
         tvert = true; // 縦ドラッグ確定
       } else {
         return; // まだ横スワイプの可能性 → スクロールはしない（切替へ）
       }
     }
-    tacc += t.clientY - tly;
+    pendPx += t.clientY - tly;
     tly = t.clientY;
-    const rows = (tacc / TOUCH_ROW_PX) | 0; // 切り捨て（符号保持）
-    if (rows !== 0) {
-      tacc -= rows * TOUCH_ROW_PX;
-      doScroll(-rows); // 指↓(rows>0)=過去=負 / 指↑=新しい=正
-    }
+    if (!rafQ) { rafQ = true; requestAnimationFrame(flush); }
   }, { passive: false });
-  thost.addEventListener("touchend", () => { tact = false; },
-    { passive: true });
+  thost.addEventListener("touchend", () => {
+    tact = false;
+    flush(); // 指を離した時点の端数も反映（取りこぼし防止）
+  }, { passive: true });
 
   window.addEventListener("resize", () => {
     fit.fit();
