@@ -306,6 +306,52 @@ rows:500}`・RESIZE 1 本(500,160)のみ・`resize`/wheel/touch/PageUp で
 JS エラー無しを確認。ピンチズーム/native スクロールの操作感は実機
 確認に委ねる。
 
+## M7k: セキュリティハードニング（/session 認証＋SA ローテーション）
+
+監査で判明した 2 つの構造的弱点を是正（ユーザー決定: 即 enforce＋
+旧鍵即削除）。
+
+### 公開 /session の認証（最大の穴を閉塞）
+
+旧: 公開 Cloud Run relay `/session?sid=&role=` は無認証。有効な sid を
+知れば Google 認証ゲートを経ず viewer 接続し端末 I/O を覗けた。
+
+修正: 新たな共有秘密を増やさず、relay と agent が既に相互信頼する
+**Firestore（SA ゲート）** で認可。
+- `state.PutRelayGrant(sid,role,ttl)`/`CheckRelayGrant`：SA を持つ
+  正規接続元のみ `relaygrants/{sid:role}` の短命許可を書ける。fail-closed。
+- agent(source) は handleWake で BridgeSourceIdle 直前、`cloud attach`
+  (viewer) は Dial 直前に毎回 grant を書く（再接続で更新・TTL60s）。
+- `relay.Server.Grant` を `cloud/relay/main` が web 有効構成（=本番）で
+  `st.CheckRelayGrant` に常時注入。公開 `ServeHTTP(/session)` は検証し
+  false で 403。**認証済 Web `/ws` は `Accept` 直叩きで /session を
+  通らない＝従来どおり Google 認証・無影響**。relay 自身の Firestore は
+  Cloud Run ランタイム SA（別物）なので cm-agent 鍵削除と独立。
+- 検証: 実エミュレータ（`TestRelayGrantPutCheckExpiry`：put/check/
+  role 不一致/期限切れ/不正引数）＋httptest（`TestSessionRequiresGrant`：
+  grant false→403・true→非403）。実デプロイ rev で grant 無し
+  `/session`→**403** を実取得確認。全 13 緑。
+
+### SA 鍵ローテーション（共有鍵モデルの是正・運用）
+
+`cm-agent` 鍵を新規発行→`~/.claude-master/sa.json` 置換(600)→ローカル
+launchd 再起動→Cloud Run `ENROLL_SA_JSON_B64` 更新→**旧鍵削除**。
+手順は `deploy/rotate-sa.sh <PROJECT>` にスクリプト化（次回ワンコマンド）。
+relay の Firestore はランタイム SA なので無停止。旧鍵で enroll 済みの
+他 PC は切断＝再 enroll/更新が必要（個人運用の割り切り）。
+
+### 公開リポからの識別子スクラブ
+
+公開 GitHub の CLAUDE.md/DESIGN に relay URL/プロジェクト/Client ID/
+許可メールが記載されていた（暗号秘密は元々非コミット）。プレース
+ホルダ化。履歴の旧値は残るが /session 認証導入で obscurity 依存を脱した。
+
+### 残る既知の割り切り（個人運用前提）
+
+- cookie はサーバ側失効なし（Exp 12h）。relay は平文を中継（E2E 暗号
+  化なし＝自 GCP を信頼）。OAuth は External/Testing。多人数/公開化
+  する場合は cookie 失効・レート制限・SA スコープ分離が要追加。
+
 ## 不変条件継承
 
 - relay はバイト透過のまま（ブラウザ viewer も同 protocol）。
