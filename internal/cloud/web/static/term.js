@@ -186,16 +186,21 @@ function run() {
   }, { passive: true });
   thost.addEventListener("touchmove", (e) => {
     if (!tact || e.touches.length !== 1) return;
+    // #term 上では何があってもブラウザ既定（ページスクロール/
+    // pull-to-refresh＝リロード）を起こさない。方向確定前でも必ず
+    // preventDefault（確定後だと最初の数 move でブラウザがジェスチャ
+    // を握りリロードが走るため）。横スワイプは座標で判定するので
+    // 既定を消しても切替は動く。
+    if (e.cancelable) e.preventDefault();
     const t = e.touches[0];
     const totDx = t.clientX - tx0, totDy = t.clientY - ty0;
     if (!tvert) {
       if (Math.abs(totDy) > 12 && Math.abs(totDy) > Math.abs(totDx)) {
         tvert = true; // 縦ドラッグ確定
       } else {
-        return; // まだ横スワイプの可能性 → 触らない（切替に委ねる）
+        return; // まだ横スワイプの可能性 → スクロールはしない（切替へ）
       }
     }
-    e.preventDefault(); // ページスクロール/pull-to-refresh 抑止
     tacc += t.clientY - tly;
     tly = t.clientY;
     const rows = (tacc / TOUCH_ROW_PX) | 0; // 切り捨て（符号保持）

@@ -72,8 +72,16 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/xterm.css">
 <style>
+ /* タッチスクロール時のブラウザ pull-to-refresh / overscroll を
+    完全に無効化（JS preventDefault は方向確定前に間に合わずリロード
+    が走るため、タイミング非依存の CSS で殺す）。body は固定し
+    ドキュメント自体をドラッグ不能に。#term 配下は touch-action:none
+    でブラウザ既定ジェスチャを奪い、こちらの SCROLL 変換へ一本化。 */
  html,body{margin:0;height:100%;background:#0b0b0b;color:#ddd;
-  font-family:system-ui}
+  font-family:system-ui;overscroll-behavior:none;overflow:hidden;
+  -webkit-overflow-scrolling:auto}
+ body{position:fixed;inset:0}
+ #term,#term *{touch-action:none}
  #bar{padding:6px 12px;background:#161616;display:flex;gap:10px;
   align-items:center;font-size:13px}
  #bar a{color:#7ab;text-decoration:none}

@@ -279,6 +279,14 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	if !strings.Contains(tb, `id="prev"`) || !strings.Contains(tb, `id="next"`) {
 		t.Fatal("/term にコンソール切替ボタン（prev/next）が無い")
 	}
+	// タッチスクロール時の pull-to-refresh / overscroll を CSS で殺す
+	// （JS preventDefault は方向確定前に間に合わない）。
+	for _, css := range []string{"overscroll-behavior:none",
+		"touch-action:none", "position:fixed"} {
+		if !strings.Contains(tb, css) {
+			t.Fatalf("/term に pull-to-refresh 抑止 CSS %q が無い", css)
+		}
+	}
 	// 静的アセット（ディレクトリ名表示・スワイプ切替の存在も検証）
 	for _, a := range []struct{ p, want string }{
 		{"/static/xterm.css", ".xterm"},
