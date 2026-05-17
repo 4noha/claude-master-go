@@ -290,6 +290,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "scrollFrame"},       // ホイール→SCROLL 変換
 		{"/static/term.js", `"wheel"`},           // ホイール捕捉
 		{"/static/term.js", "PageUp"},            // PageUp→スクリーン内
+		{"/static/term.js", `"touchmove"`},       // スマホ縦ドラッグ→スクロール
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},          // 一覧→term へ dir 受渡し
 	} {

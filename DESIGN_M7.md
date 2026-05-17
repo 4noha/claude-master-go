@@ -203,6 +203,13 @@ SyncsTermination`）。consumer 側の desired 縮小→窓 kill は既存テス
   claude の行編集を壊さないため非変換（Shift+Home/End のみ最古/live）。
   proxy 側 `parseClientInput` の scrollMagic 処理は `WheelScroll`
   config 非依存で常時有効＝relay 越し Web でもそのまま効く。
+- **スマホ タッチ縦ドラッグ→スクロール**: `#term` の touchstart/move/
+  end を捕捉し、縦移動が横より優位（|Δy|>12 かつ |Δy|>|Δx|）になった
+  時だけ縦ドラッグ確定→以降 preventDefault（ページスクロール/pull-to-
+  refresh 抑止）し `TOUCH_ROW_PX`(16px)/行で `doScroll` 送出。指↓=過去
+  （dy 負）/指↑=新しい（dy 正）＝tmux copy-mode と同じ自然方向（content
+  が指に追従）。横優位の間は何もせず横スワイプ（コンソール切替＝
+  setupSwitch）に委譲＝方向で完全分離（衝突無し）。多点タッチは無視。
 
 ### RESIZE 送信に関する重要な訂正（誤診→撤回）
 

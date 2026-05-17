@@ -33,6 +33,7 @@ const SCROLL_STEP = 3;       // ホイール 1 ノッチあたり行
 const PAGE_STEP = 10;        // PageUp/PageDown 1 回あたり行
 const FOLLOW_DY = 32767;     // live（最下部）復帰
 const TOP_DY = -32768;       // 最古へ（Home 相当・clamp16 と同値）
+const TOUCH_ROW_PX = 16;     // 指の縦移動 何px で 1 行スクロールするか
 function scrollFrame(dy) {
   const v = dy & 0xffff;     // int16 二の補数 下位16bit
   return new Uint8Array([0xff, 0xfe, (v >> 8) & 0xff, v & 0xff]);
@@ -169,6 +170,42 @@ function run() {
     }
     return true;
   });
+
+  // スマホ等のタッチ縦ドラッグ → proxy の managed scroll へ変換。
+  // 横スワイプ（setupSwitch のコンソール切替）と衝突しないよう、縦が
+  // 横より優位になった時だけスクロール扱い（その間は preventDefault で
+  // ページスクロール/pull-to-refresh を抑止）。指を下げる=過去を見る
+  // ＝SCROLL 負（content が指に追従。tmux copy-mode と同じ自然方向）。
+  const thost = $("term");
+  let tx0 = 0, ty0 = 0, tly = 0, tact = false, tvert = false, tacc = 0;
+  thost.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) { tact = false; return; }
+    const t = e.touches[0];
+    tx0 = t.clientX; ty0 = t.clientY; tly = t.clientY;
+    tact = true; tvert = false; tacc = 0;
+  }, { passive: true });
+  thost.addEventListener("touchmove", (e) => {
+    if (!tact || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const totDx = t.clientX - tx0, totDy = t.clientY - ty0;
+    if (!tvert) {
+      if (Math.abs(totDy) > 12 && Math.abs(totDy) > Math.abs(totDx)) {
+        tvert = true; // 縦ドラッグ確定
+      } else {
+        return; // まだ横スワイプの可能性 → 触らない（切替に委ねる）
+      }
+    }
+    e.preventDefault(); // ページスクロール/pull-to-refresh 抑止
+    tacc += t.clientY - tly;
+    tly = t.clientY;
+    const rows = (tacc / TOUCH_ROW_PX) | 0; // 切り捨て（符号保持）
+    if (rows !== 0) {
+      tacc -= rows * TOUCH_ROW_PX;
+      doScroll(-rows); // 指↓(rows>0)=過去=負 / 指↑=新しい=正
+    }
+  }, { passive: false });
+  thost.addEventListener("touchend", () => { tact = false; },
+    { passive: true });
 
   window.addEventListener("resize", () => {
     fit.fit();
