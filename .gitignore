@@ -1,6 +1,10 @@
 # build artifacts（配布物は goreleaser/CI で生成、コミットしない）
 /claude-master
+/claude-master.bak.*
 /dist/
 *.test
 *.out
 .DS_Store
+
+# Claude Code 個人用ローカル設定（bypassPermissions 等・コミットしない）
+.claude/settings.local.json
