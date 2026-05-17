@@ -26,6 +26,11 @@ import (
 type Server struct {
 	mu       sync.Mutex
 	sessions map[string]*sess
+	// Grant が非 nil なら **公開 /session**（ServeHTTP）接続時に
+	// (sid,role) を検証し、false なら 403。認証済 Web /ws は Accept を
+	// 直接呼ぶため対象外（無影響）。nil なら従来どおり無認証（テスト/
+	// Firestore 無し構成）。本番は state.CheckRelayGrant を注入。
+	Grant func(ctx context.Context, sid, role string) bool
 }
 
 type sess struct {
@@ -42,6 +47,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	role := r.URL.Query().Get("role")
 	if sid == "" || (role != "source" && role != "viewer") {
 		http.Error(w, "sid と role(source|viewer) が必要", http.StatusBadRequest)
+		return
+	}
+	// 公開 /session の認可: Firestore グラント（SA を持つ正規接続元のみ
+	// 書ける短命許可）を検証。Web /ws は Accept 直叩きで通らない。
+	if s.Grant != nil && !s.Grant(r.Context(), sid, role) {
+		http.Error(w, "未認可（grant 無効）", http.StatusForbidden)
 		return
 	}
 	s.Accept(w, r, sid, role)

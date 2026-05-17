@@ -281,3 +281,39 @@ func TestDeleteSessionSyncsTermination(t *testing.T) {
 		t.Fatalf("不在キー再 Delete はエラー無しのはず: %v", err)
 	}
 }
+
+// relay グラント: 正規接続元(SA)が書いた短命許可を relay が検証する
+// 公開 /session 認可の土台。実エミュレータで決定的に検証。
+func TestRelayGrantPutCheckExpiry(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-grant")
+	// 無ければ false（fail-closed）
+	if c.CheckRelayGrant(ctx, "sidA", "viewer") {
+		t.Fatal("grant 無しで true")
+	}
+	// 書けば true（同 sid,role のみ）
+	if err := c.PutRelayGrant(ctx, "sidA", "viewer", time.Minute); err != nil {
+		t.Fatalf("PutRelayGrant: %v", err)
+	}
+	if !c.CheckRelayGrant(ctx, "sidA", "viewer") {
+		t.Fatal("有効 grant が false")
+	}
+	if c.CheckRelayGrant(ctx, "sidA", "source") {
+		t.Fatal("role 不一致なのに true（viewer の grant で source 通過）")
+	}
+	if c.CheckRelayGrant(ctx, "sidB", "viewer") {
+		t.Fatal("sid 不一致なのに true")
+	}
+	// 期限切れ（負 TTL）→ false
+	if err := c.PutRelayGrant(ctx, "sidExp", "source", -time.Second); err != nil {
+		t.Fatalf("PutRelayGrant exp: %v", err)
+	}
+	if c.CheckRelayGrant(ctx, "sidExp", "source") {
+		t.Fatal("期限切れ grant が true")
+	}
+	// 不正引数は no-op / false（安全側）
+	if c.PutRelayGrant(ctx, "", "viewer", time.Minute) != nil ||
+		c.CheckRelayGrant(ctx, "x", "bogus") {
+		t.Fatal("不正引数の安全側挙動が不正")
+	}
+}

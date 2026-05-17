@@ -490,6 +490,9 @@ func runCloudAttach(cfg *config.Config, args []string) {
 	if err := st.Wake(ctx, targetPC, sid); err != nil { // 相手 PC を起こす
 		exitErr(fmt.Errorf("wake 失敗: %w", err))
 	}
+	// 公開 /session 認可のため viewer グラントを書いてから接続
+	// （SA を持つ正規接続元のみ書ける＝relay が検証）。
+	_ = st.PutRelayGrant(ctx, sid, "viewer", 60*time.Second)
 	conn, err := relay.Dial(ctx, cfg.CloudRelayURL, sid, "viewer")
 	if err != nil {
 		exitErr(fmt.Errorf("relay 接続失敗: %w", err))

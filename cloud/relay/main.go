@@ -36,6 +36,8 @@ func handler() http.Handler {
 		if err != nil {
 			log.Printf("web 無効（Firestore 接続失敗）: %v", err)
 		} else {
+			// 公開 /session を Firestore グラントで認可（即 enforce）。
+			rl.Grant = st.CheckRelayGrant
 			enrollSA := os.Getenv("ENROLL_SA_JSON")
 			if enrollSA == "" {
 				// JSON は --set-env-vars を壊すため b64 で渡せる

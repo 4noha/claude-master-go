@@ -222,3 +222,37 @@ func TestRelayPairsBySessionID(t *testing.T) {
 		t.Fatalf("別 sid に混線: %q", got[:n])
 	}
 }
+
+// 公開 /session は Grant 注入時に (sid,role) を検証し、false なら 403。
+// 認証済 Web /ws は Accept 直叩きで ServeHTTP を通らない＝無影響。
+func TestSessionRequiresGrant(t *testing.T) {
+	rl := NewServer()
+	called := ""
+	rl.Grant = func(_ context.Context, sid, role string) bool {
+		called = sid + ":" + role
+		return false // 不許可
+	}
+	hs := httptest.NewServer(http.HandlerFunc(rl.ServeHTTP))
+	defer hs.Close()
+	r, err := http.Get(hs.URL + "/session?sid=secret-sid&role=viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("grant false なのに 403 でない: %d", r.StatusCode)
+	}
+	if called != "secret-sid:viewer" {
+		t.Fatalf("Grant に sid/role が渡っていない: %q", called)
+	}
+	// Grant 許可なら 403 にはならない（WS upgrade 失敗で別コードはOK）
+	rl.Grant = func(_ context.Context, _, _ string) bool { return true }
+	r2, err := http.Get(hs.URL + "/session?sid=s&role=source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode == http.StatusForbidden {
+		t.Fatal("grant true なのに 403")
+	}
+}

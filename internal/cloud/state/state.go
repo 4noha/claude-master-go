@@ -290,3 +290,45 @@ func (c *Client) WatchWake(ctx context.Context, cb func(sid string)) error {
 		}
 	}
 }
+
+// relayGrantID は relaygrants/ の doc id。sid と role の組で一意
+// （`/` は doc id 不可なので `:` 区切り）。
+func relayGrantID(sid, role string) string { return sid + ":" + role }
+
+// PutRelayGrant は「この (sid,role) で relay /session に接続してよい」
+// という短命の許可を Firestore に書く。SA（Firestore アクセス）を持つ
+// 正規の接続元（agent の source / `cloud attach` viewer）だけが書ける
+// ＝公開 /session の認可根拠。relay が CheckRelayGrant で検証する。
+// 接続のたびに呼ぶ前提（再接続で上書き）。TTL は接続レイテンシ＋
+// 再接続間隔をカバーする短さ。
+func (c *Client) PutRelayGrant(ctx context.Context, sid, role string, ttl time.Duration) error {
+	if sid == "" || (role != "source" && role != "viewer") {
+		return nil
+	}
+	_, err := c.fs.Collection("relaygrants").Doc(relayGrantID(sid, role)).
+		Set(ctx, map[string]any{
+			"sid": sid, "role": role,
+			"exp": time.Now().Add(ttl).UTC().Format(time.RFC3339Nano),
+		})
+	return err
+}
+
+// CheckRelayGrant は (sid,role) の有効な許可が存在するか（期限内か）。
+// relay の公開 /session ハンドラが Accept 前に呼ぶ。doc 無し/期限切れ/
+// 取得失敗は false（fail-closed＝認可されない）。
+func (c *Client) CheckRelayGrant(ctx context.Context, sid, role string) bool {
+	if sid == "" || (role != "source" && role != "viewer") {
+		return false
+	}
+	snap, err := c.fs.Collection("relaygrants").
+		Doc(relayGrantID(sid, role)).Get(ctx)
+	if err != nil || snap == nil || !snap.Exists() {
+		return false
+	}
+	es, _ := snap.Data()["exp"].(string)
+	t, perr := time.Parse(time.RFC3339Nano, es)
+	if perr != nil {
+		return false
+	}
+	return time.Now().Before(t)
+}

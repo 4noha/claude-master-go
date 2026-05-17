@@ -61,6 +61,10 @@ func (a *Agent) handleWake(ctx context.Context, sid string) {
 	if !ok {
 		return // そのセッションがこの PC に無い
 	}
+	// 公開 /session 認可のため source グラントを書いてから接続
+	// （SA を持つ正規 agent だけが書ける＝relay が CheckRelayGrant で
+	// 検証）。再接続のたび更新されるよう毎回・短 TTL。
+	_ = a.St.PutRelayGrant(ctx, sid, "source", 60*time.Second)
 	// データ線: relay ⇄ ローカル unix socket。idle で自動クローズ。
 	_ = relay.BridgeSourceIdle(ctx, a.RelayURL, sid, sock, a.IdleClose)
 }
