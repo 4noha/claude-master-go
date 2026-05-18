@@ -373,10 +373,20 @@ darwin/linux × amd64/arm64・asset 名 `claude-master_<os>_<arch>` +
 
 ## 配布 / 更新
 
-- ワンライナー: `curl -fsSL https://raw.githubusercontent.com/4noha/claude-master-go/main/install.sh | sh`
-- 更新: `claude-master update`（sha256 検証・原子置換）or 同ワンライナー再実行
+- unix/macOS ワンライナー: `curl -fsSL https://raw.githubusercontent.com/4noha/claude-master-go/main/install.sh | sh`
+- **Windows: `install.ps1`（M8g 実装。冪等・`-DryRun`・自己昇格）**。
+  Windows Release asset 未発行のため当面は repo clone 後ソースビルド:
+  `pwsh -ExecutionPolicy Bypass -File install.ps1 -Build`（既存 exe
+  流用は `-Source <exe>`）。claude シム＋User PATH／ASCII `*.cmd`／
+  toml 雛形／S4U タスク monitor・cloud（要管理者＝UAC 自己昇格、
+  `-SkipTasks` で回避可）。前提物（実 claude.exe／psmux／sa.json）は
+  検出して案内（自動生成不可）。Windows Release 発行後は
+  `irm https://raw.githubusercontent.com/4noha/claude-master-go/main/install.ps1 | iex` も有効。
+- 更新: `claude-master update`（sha256 検証・原子置換）or 同スクリプト
+  再実行（unix=install.sh / windows=install.ps1・冪等）
 - リリース: `git tag vX.Y.Z && git push --tags`（goreleaser CI 化は未）
-  or ローカル `make dist`。**実 DL 経路は Release 発行後に有効。**
+  or ローカル `make dist`。**実 DL 経路は Release 発行後に有効**
+  （goreleaser の windows/amd64・arm64 asset 追加も follow-up）。
 
 ## ビルド / テスト
 
