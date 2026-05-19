@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -119,8 +118,7 @@ func runProxy(args []string) {
 			restore = func() { _ = term.Restore(int(os.Stdin.Fd()), st) }
 		}
 	}
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGWINCH)
+	sig, stopWinch := notifyWinch()
 
 	code, err := ptyproxy.RunProxy(ptyproxy.ProxyOpts{
 		Argv:     append([]string{cfg.RealClaude}, args...),
@@ -131,7 +129,7 @@ func runProxy(args []string) {
 		Sigwinch: sig,
 		Version:  version, // status.json の cm_version（per-proxy 版・🟢/🔴 用）
 	})
-	signal.Stop(sig)
+	stopWinch()
 	if restore != nil {
 		restore()
 	}
@@ -472,10 +470,13 @@ func runCloudAgent(cfg *config.Config) {
 		wc := func(pc, sid, dir string) string {
 			// 再接続は 30s 間隔（切断時の Cloud Run 再接続＋Firestore
 			// wake 書込のコスト churn を抑制。閲覧復帰は最大 30s 遅延）。
-			return fmt.Sprintf("while true; do env GCP_PROJECT=%s "+
-				"CLOUD_RELAY_URL=%s GOOGLE_APPLICATION_CREDENTIALS=%s "+
-				"%s cloud attach %s --pc %s; sleep 30; done",
-				cfg.GCPProject, cfg.CloudRelayURL, sa, self, sid, pc)
+			// 実体は OS-split: unix=POSIX sh（M8 前とバイト同一＝parity）
+			// ／windows=PowerShell（psmux default-shell=powershell.exe。
+			// POSIX 構文だと pane が即終了→remain-on-exit off で窓が
+			// 生成直後に消滅→reconcile が毎周再作成する runaway storm の
+			// 真因だった。remotecmd_unix.go / remotecmd_windows.go）。
+			return remoteAttachCmd(self, cfg.GCPProject,
+				cfg.CloudRelayURL, sa, sid, pc)
 		}
 		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc)
 	} else {
@@ -522,65 +523,6 @@ func runCloudAgent(cfg *config.Config) {
 	if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
 		exitErr(err)
 	}
-}
-
-// restartDaemons は launchd の monitor/cloud 2 デーモンを kickstart -k
-// で再起動（cloud 自身も含むため自分は SIGKILL→launchd 再生で新バイナリ
-// に載る。それゆえ呼び元は Ack 先行）。
-func restartDaemons() error {
-	dom := fmt.Sprintf("gui/%d", os.Getuid())
-	// monitor を先に（cloud を後＝自己 kill 前に他方を確実に発火）
-	_ = exec.Command("launchctl", "kickstart", "-k",
-		dom+"/com.4noha.claude-master").Run()
-	return exec.Command("launchctl", "kickstart", "-k",
-		dom+"/com.4noha.claude-master-cloud").Run()
-}
-
-// killProxy は proxy を SIGTERM→3s 猶予→生存なら SIGKILL（子 claude も
-// 同時に落ちる）。既に不在なら成功扱い。
-func killProxy(pid int) error {
-	if pid <= 0 {
-		return fmt.Errorf("不正 pid")
-	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		if err == syscall.ESRCH {
-			return nil // 既に不在
-		}
-		return err
-	}
-	for i := 0; i < 30; i++ {
-		if syscall.Kill(pid, 0) == syscall.ESRCH {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-	return nil
-}
-
-// spawnResumeProxy は `claude-master proxy --resume <sid>` を cwd で
-// detached（setsid・stdio=/dev/null）起動。元端末へは戻らないが unix
-// socket を出すので web/cloud 経由で会話を復帰できる。claude --resume
-// の再ストリーム/SESSION_LOG/dedup 不変は ptyproxy 側で既に担保。
-func spawnResumeProxy(sid, cwd string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	c := exec.Command(self, "proxy", "--resume", sid)
-	if cwd != "" {
-		c.Dir = cwd
-	}
-	devnull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if devnull != nil {
-		c.Stdin, c.Stdout, c.Stderr = devnull, devnull, devnull
-	}
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // agent と独立に存続
-	if err := c.Start(); err != nil {
-		return err
-	}
-	_ = c.Process.Release()
-	return nil
 }
 
 func runCloudAttach(cfg *config.Config, args []string) {

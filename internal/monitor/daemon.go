@@ -3,7 +3,6 @@ package monitor
 import (
 	"os"
 	"os/exec"
-	"syscall"
 )
 
 // newDetached は自バイナリを新セッション（setsid）で背後起動する
@@ -17,6 +16,6 @@ func newDetached(self string, args []string, logw *os.File) *exec.Cmd {
 	}
 	cmd.Stdout = logw
 	cmd.Stderr = logw
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachSysProcAttr()
 	return cmd
 }

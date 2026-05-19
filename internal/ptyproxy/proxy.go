@@ -1,84 +1,73 @@
-// Package ptyproxy は claude を PTY 配下で fork+exec し、出力を忠実
-// VT モデルへ流し、host stdin/stdout と unix socket(複数 client)を
-// 多重化する（Python pty_proxy.py の移植・M3）。
+// Package ptyproxy は claude を PTY 配下で起動し、出力を忠実 VT モデルへ
+// 流し、host stdin/stdout と unix socket(複数 client)を多重化する
+// （Python pty_proxy.py の移植）。
 //
-// Slice 1（本ファイル現状）: fork+exec + master 読取 + VT 投入 +
-// winsize。host/socket 多重化と per-client 描画は後続スライス。
+// PTY/プロセス実体は OS 依存（unix=creack/pty・windows=ConPTY）。本
+// ファイルは OS 非依存の骨格のみで、実体は ptyBackend 経由（M8b）。
+// server.go/run.go は Proxy の公開面（master の Read/Write/Close と
+// Setsize/Wait/Pid/Close）だけに依存し OS 差を意識しない。
 package ptyproxy
 
 import (
 	"errors"
 	"io"
-	"os"
-	"os/exec"
-	"syscall"
 
 	"github.com/4noha/claude-master-go/internal/screen"
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
+
+// ptyBackend は OS 依存の PTY＋子プロセス実体。startBackend は OS-split
+// （proxy_unix.go=creack/pty、proxy_windows.go=ConPTY）で実装する。
+type ptyBackend interface {
+	Master() io.ReadWriteCloser // 子の出力読取・入力書込
+	Setsize(cols, rows int) error
+	Wait() error // 子終了まで待つ。終了コードは ExitCode() で運ぶ
+	Pid() int
+	Close()
+	// closedErr は err が「子終了で master が閉じた」を表すか
+	// （unix=EIO 等。io.EOF は PumpToVT 側で別途扱う）。
+	closedErr(err error) bool
+}
+
+// startBackend（argv を (cols,rows) の PTY 配下で起動）は OS-split で
+// 実装する: proxy_unix.go=creack/pty、proxy_windows.go=ConPTY。
 
 // Proxy は claude プロセスと忠実 VT モデルを保持する。
 type Proxy struct {
-	cmd    *exec.Cmd
-	master *os.File
-	tty    *os.File
+	be     ptyBackend
+	master io.ReadWriteCloser // == be.Master()。テストは直接注入可
 	VT     *screen.VT
 	cols   int
 	rows   int
 }
 
-// Start は argv のコマンドを (cols,rows) の PTY 配下で起動する。
-// slave tty を raw 化（OPOST/ONLCR/echo を無効）し、子の出力を
-// **verbatim** に master へ流す（claude 自身が raw にするのと同義。
-// 録画リプレイ検証でもバイト忠実）。
+// Start は argv のコマンドを (cols,rows) の PTY 配下で起動する。子の
+// 出力は **verbatim** に master へ流れる（録画リプレイ検証でバイト忠実）。
 func Start(argv []string, cols, rows int) (*Proxy, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("ptyproxy: 空 argv")
 	}
-	ptmx, tty, err := pty.Open()
+	be, err := startBackend(argv, cols, rows)
 	if err != nil {
 		return nil, err
 	}
-	// slave を raw に（子出力の post-processing を止めて忠実中継）
-	if _, e := term.MakeRaw(int(tty.Fd())); e != nil {
-		// 失敗しても致命ではない（環境により）。続行
-		_ = e
-	}
-	if err := pty.Setsize(ptmx, &pty.Winsize{
-		Rows: uint16(rows), Cols: uint16(cols),
-	}); err != nil {
-		_ = ptmx.Close()
-		_ = tty.Close()
-		return nil, err
-	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-	if err := cmd.Start(); err != nil {
-		_ = ptmx.Close()
-		_ = tty.Close()
-		return nil, err
-	}
 	return &Proxy{
-		cmd: cmd, master: ptmx, tty: tty,
+		be: be, master: be.Master(),
 		VT:   screen.NewModel(cols, rows),
 		cols: cols, rows: rows,
 	}, nil
 }
 
-// Setsize は実行中 PTY と VT モデルのサイズを変更する（M3 後続で
-// host/client リサイズ経路から呼ぶ）。
+// Setsize は実行中 PTY と VT モデルのサイズを変更する。
 func (p *Proxy) Setsize(cols, rows int) error {
 	p.cols, p.rows = cols, rows
-	return pty.Setsize(p.master, &pty.Winsize{
-		Rows: uint16(rows), Cols: uint16(cols),
-	})
+	if p.be == nil {
+		return nil
+	}
+	return p.be.Setsize(cols, rows)
 }
 
 // PumpToVT は master を任意チャンクで読み、忠実 VT へ流す。子が終了し
-// master が閉じる（EOF / EIO）まで。Slice 1 検証用の最小ループ。
-// 後続スライスで host/clients への per-client 描画を足す。
+// master が閉じる（EOF / OS 固有の閉鎖エラー）まで。
 func (p *Proxy) PumpToVT() error {
 	buf := make([]byte, 4096)
 	for {
@@ -87,7 +76,7 @@ func (p *Proxy) PumpToVT() error {
 			p.VT.Feed(buf[:n])
 		}
 		if err != nil {
-			if err == io.EOF || isPtyClosed(err) {
+			if err == io.EOF || (p.be != nil && p.be.closedErr(err)) {
 				return nil
 			}
 			return err
@@ -96,31 +85,24 @@ func (p *Proxy) PumpToVT() error {
 }
 
 // Wait は子プロセス終了を待つ。
-func (p *Proxy) Wait() error { return p.cmd.Wait() }
-
-// Pid は子 claude プロセス PID（未起動/テスト構築時は 0）。
-func (p *Proxy) Pid() int {
-	if p.cmd != nil && p.cmd.Process != nil {
-		return p.cmd.Process.Pid
+func (p *Proxy) Wait() error {
+	if p.be == nil {
+		return nil
 	}
-	return 0
+	return p.be.Wait()
+}
+
+// Pid は子プロセス PID（未起動/テスト構築時は 0）。
+func (p *Proxy) Pid() int {
+	if p.be == nil {
+		return 0
+	}
+	return p.be.Pid()
 }
 
 // Close はリソース解放。
 func (p *Proxy) Close() {
-	if p.master != nil {
-		_ = p.master.Close()
+	if p.be != nil {
+		p.be.Close()
 	}
-	if p.tty != nil {
-		_ = p.tty.Close()
-	}
-}
-
-// isPtyClosed: 子終了後に master を読むと OS により EIO になる。EOF 同等。
-func isPtyClosed(err error) bool {
-	var perr *os.PathError
-	if errors.As(err, &perr) {
-		return errors.Is(perr.Err, syscall.EIO)
-	}
-	return errors.Is(err, syscall.EIO)
 }

@@ -1,3 +1,9 @@
+//go:build !windows
+
+// 実 tmux サーバで Manager CRUD/@cm_remote/pane を検証する unix 専用
+// テスト（@cm_remote/pane_current_command は psmux 非忠実＝Windows 対象外。
+// それらは cloud agent=M8f）。Windows の monitor 利用サブセットは
+// tmux_windows_test.go（実 psmux）。Mac/linux 従来通り＝parity。
 package tmux
 
 import (

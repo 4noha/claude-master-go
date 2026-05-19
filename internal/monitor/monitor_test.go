@@ -1,3 +1,9 @@
+//go:build !windows
+
+// 実 `ps`/`lsof` の scanner.Scan＋実 tmux サーバで監視ループを検証する
+// unix 専用テスト（testMgr を limit_test.go と共有）。Windows の
+// monitor/tmux 検証は tmux_windows_test.go（実 psmux）。Mac/linux では
+// 従来通り全実行＝parity 無影響（他環境クリーン）。
 package monitor
 
 import (

@@ -1,4 +1,4 @@
-//go:build !manual
+//go:build !manual && !windows
 
 package agent
 

@@ -7,4 +7,9 @@
 .DS_Store
 
 # Claude Code 個人用ローカル設定（bypassPermissions 等・コミットしない）
+# 先頭スラッシュ無し＝任意階層で無視（/.claude/... の上位集合）
 .claude/settings.local.json
+
+# Windows ビルド成果物 / PoC スクラッチ
+/claude-master.exe
+/tmp/

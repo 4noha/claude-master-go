@@ -146,10 +146,10 @@ func replaceSelf(newBin []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, exe); err != nil {
-		return fmt.Errorf("置換失敗 %s: %w", exe, err)
-	}
-	return nil
+	// 原子置換の最終段は OS-split（unix=直接 rename で byte 同一／
+	// windows=実行中 exe を退避してから新配置）。
+	// place_unix.go / place_windows.go。
+	return placeBinary(tmpName, exe)
 }
 
 func normalize(v string) string {
