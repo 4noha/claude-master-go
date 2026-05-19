@@ -15,11 +15,13 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/cloud/relay"
 	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/cloud/webauth"
+	"github.com/4noha/claude-master-go/internal/selfupdate"
 )
 
 //go:embed static
@@ -38,6 +40,32 @@ type Server struct {
 	gv         webauth.GoogleVerifier
 	gcpProject string // enroll が新 PC へ渡す GCP プロジェクト
 	enrollSA   string // enroll が新 PC へ渡す SA 鍵 JSON（env 由来・任意）
+
+	// 目標版（最新 Release tag）。seam＝テストで GitHub に出ない。
+	latestTag func() (string, error)
+	tgtMu     sync.Mutex
+	tgtVer    string
+	tgtAt     time.Time
+}
+
+// targetVersion は最新 Release tag を ~10 分キャッシュで返す（GitHub
+// レート/遅延回避）。失敗時は直近キャッシュ（無ければ ""）＝誤って
+// 全 🔴 にしない。
+func (s *Server) targetVersion() string {
+	s.tgtMu.Lock()
+	defer s.tgtMu.Unlock()
+	if time.Since(s.tgtAt) < 10*time.Minute && s.tgtVer != "" {
+		return s.tgtVer
+	}
+	fn := s.latestTag
+	if fn == nil {
+		fn = selfupdate.LatestTag
+	}
+	if v, err := fn(); err == nil && v != "" {
+		s.tgtVer = v
+		s.tgtAt = time.Now()
+	}
+	return s.tgtVer
 }
 
 // New は Google ログイン版。allowedEmails はカンマ区切り、gv が nil なら
@@ -70,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
 	mux.HandleFunc("/api/devices", s.apiGuard(s.apiDevices))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
+	mux.HandleFunc("/api/version", s.apiGuard(s.apiVersion)) // 目標版（🟢/🔴 判定用）
 	mux.HandleFunc("/api/pc/delete", s.apiGuard(s.apiDeletePC)) // 端末ペアリング削除
 	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll)) // 端末追加コード発行
 	mux.HandleFunc("/enroll", s.enroll)                    // 新 PC が code 交換
@@ -222,11 +251,20 @@ func (s *Server) apiDevices(w http.ResponseWriter, r *http.Request, t webauth.To
 				active++
 			}
 		}
+		cmv, _ := s.st.PCVersion(ctx, pc) // agent 版（idle PC でも版表示）
 		out = append(out, map[string]any{
 			"id": pc, "sessions": len(ss), "active": active,
+			"cm_version": cmv,
 		})
 	}
 	json.NewEncoder(w).Encode(out)
+}
+
+// apiVersion: 目標版（最新 Release tag）。devices.js が各 cm_version と
+// 比較し 🟢/🔴 を出す。target 空＝判定不能（GitHub 取得不可）でバッジ
+// は中立表示にする（誤って全 🔴 にしない）。
+func (s *Server) apiVersion(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	json.NewEncoder(w).Encode(map[string]any{"target": s.targetVersion()})
 }
 
 // apiSessions: ?pc=<PC> のセッション一覧（スコープ検証）。

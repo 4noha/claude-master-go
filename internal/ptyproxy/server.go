@@ -69,6 +69,7 @@ type Server struct {
 	statusLast  time.Time
 	statusSig   string // 直近 payload の usage+active シグネチャ
 	statusInit  bool   // 初回は必ず書く（Python の None 比較相当）
+	cmVersion   string // この proxy バイナリ版（status.json cm_version）
 	done     chan struct{}
 	doneOnce sync.Once
 	// setClip は画像をこのホストの OS クリップボードへ載せる（差し替え

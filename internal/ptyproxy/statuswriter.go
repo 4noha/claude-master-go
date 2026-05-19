@@ -51,6 +51,12 @@ func (s *Server) maybeWriteStatusLocked() {
 		"updated_at": now.Format("2006-01-02 15:04:05"),
 		"is_active":  active,
 	}
+	if s.cmVersion != "" {
+		// per-proxy バイナリ版。プロセス毎に定数＝Firestore content_hash
+		// は初回1回のみ変化（near-$0 維持）。旧 inode で動く proxy は
+		// 旧版を書く＝web で 🔴（要更新セッション）検出に使う。
+		payload["cm_version"] = s.cmVersion
+	}
 	if found {
 		if hasPct {
 			payload["usage_percent"] = pct

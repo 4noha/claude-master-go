@@ -17,8 +17,35 @@ function el(tag, props, txt) {
   return e;
 }
 
+// 目標版（最新 Release tag）。空＝判定不能→中立表示（誤って全 🔴 に
+// しない）。stripV で先頭 v を無視して比較（v0.1.3 == 0.1.3）。
+let TARGET = "";
+const stripV = (v) => String(v || "").replace(/^v/, "");
+function verBadge(v) {
+  const sp = el("span", { className: "ver" });
+  if (!v) { sp.textContent = " ?"; sp.title = "版不明"; return sp; }
+  if (!TARGET) { sp.textContent = " " + v; sp.title = "目標版取得不可"; return sp; }
+  const ok = stripV(v) === stripV(TARGET);
+  sp.textContent = ok ? " 🟢" : " 🔴";
+  sp.className = "ver " + (ok ? "vok" : "vbad");
+  sp.title = ok ? v + "（最新）" : v + " → 要更新 " + TARGET;
+  return sp;
+}
+
+// 診断: その行の生フィールド（window_name=タイトル等）を開閉表示。
+function diagPre(x) {
+  const keys = ["pid", "session_id", "key", "cm_version", "window_name",
+    "short_dir", "cwd", "start_time", "is_active", "usage_percent",
+    "reset_time", "updated_at"];
+  const o = {};
+  for (const k of keys) if (x[k] !== undefined) o[k] = x[k];
+  o._target = TARGET || "(取得不可)";
+  return el("pre", { className: "diag" }, JSON.stringify(o, null, 2));
+}
+
 async function main() {
   try {
+    try { TARGET = (await jget("/api/version")).target || ""; } catch (e) { TARGET = ""; }
     const devs = await jget("/api/devices");
     if (!devs.length) { $("stat").textContent = "端末がありません"; return; }
     $("stat").textContent = devs.length + " 台接続";
@@ -26,7 +53,9 @@ async function main() {
     for (const d of devs) {
       const card = el("div", { className: "dev" });
       const head = el("div", { className: "devhead" });
-      head.appendChild(el("h2", null, d.id));
+      const h2 = el("h2", null, d.id);
+      h2.appendChild(verBadge(d.cm_version)); // PC(agent) 版
+      head.appendChild(h2);
       const del = el("button", { className: "del" }, "ペアリング削除");
       del.onclick = async () => {
         if (!confirm(d.id + " のペアリングを削除します。\n" +
@@ -58,14 +87,25 @@ async function main() {
           const dir = x.short_dir || x.key || "session";
           const lbl = el("span", null, dir);
           if (x.is_active) lbl.appendChild(el("span", { className: "dot" }, " ●"));
+          lbl.appendChild(verBadge(x.cm_version)); // per-proxy 版（旧 inode→🔴）
           row.appendChild(lbl);
+          const right = el("span");
+          const pre = diagPre(x);
+          pre.style.display = "none";
+          const diagBtn = el("button", { className: "diag-btn" }, "診断");
+          diagBtn.onclick = () => {
+            pre.style.display = pre.style.display === "none" ? "block" : "none";
+          };
+          right.appendChild(diagBtn);
           const a = el("a", {
             href: "/term?pc=" + encodeURIComponent(d.id) +
               "&sid=" + encodeURIComponent(x.key) +
               "&dir=" + encodeURIComponent(dir),
           }, "Web ターミナルを開く");
-          row.appendChild(a);
+          right.appendChild(a);
+          row.appendChild(right);
           card.appendChild(row);
+          card.appendChild(pre);
         }
       }
       root.appendChild(card);

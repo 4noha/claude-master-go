@@ -110,10 +110,13 @@ func (c *Client) PushStatus(ctx context.Context, sessions []map[string]any) (cha
 	// Collection("pcs") 列挙に出ない。端末一覧（account scope）で
 	// 拾えるよう、変化があった時だけ親 doc を明示書込（near-$0 維持）。
 	if changed > 0 {
+		// MergeAll＝id/updated_at のみ更新し RegisterPCVersion が入れた
+		// cm_version 等の他フィールドを消さない（全置換 Set だと agent
+		// 版が毎 producer tick で消える実バグになる）。
 		_, _ = c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, map[string]any{
 			"id":         c.pcID,
 			"updated_at": time.Now().UTC().Format(time.RFC3339),
-		})
+		}, firestore.MergeAll)
 	}
 	return changed, nil
 }
@@ -153,10 +156,20 @@ func (c *Client) ConsumePairing(ctx context.Context, codeHash string) (pc, scope
 // 出すため。agent/helper 起動時に 1 回呼ぶ＝1 書込で near-$0。
 // PushStatus の差分ゲートだと未変更セッションや再起動で消える問題を解消）。
 func (c *Client) RegisterPC(ctx context.Context) error {
-	_, err := c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, map[string]any{
+	return c.RegisterPCVersion(ctx, "")
+}
+
+// RegisterPCVersion は RegisterPC に agent バイナリ版 cm_version を併記
+// （起動時1回＝near-$0。session が無い idle PC でも web で版/🔴 判定可）。
+func (c *Client) RegisterPCVersion(ctx context.Context, agentVersion string) error {
+	doc := map[string]any{
 		"id":         c.pcID,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if agentVersion != "" {
+		doc["cm_version"] = agentVersion
+	}
+	_, err := c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, doc)
 	return err
 }
 
@@ -236,6 +249,17 @@ func (c *Client) ListSessions(ctx context.Context, pc string) ([]map[string]any,
 		out = append(out, d.Data())
 	}
 	return out, nil
+}
+
+// PCVersion は pcs/{pc}.cm_version（agent バイナリ版）を返す。未登録/
+// 未設定は ""（エラーにしない＝idle/古い端末も一覧表示は継続）。
+func (c *Client) PCVersion(ctx context.Context, pc string) (string, error) {
+	snap, err := c.fs.Collection("pcs").Doc(pc).Get(ctx)
+	if err != nil || !snap.Exists() {
+		return "", nil
+	}
+	v, _ := snap.Data()["cm_version"].(string)
+	return v, nil
 }
 
 // SessionKeyOf は session マップから doc id（＝同期キー）を返す。

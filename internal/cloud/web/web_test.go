@@ -226,6 +226,50 @@ func TestGoogleAuthGate(t *testing.T) {
 	}
 }
 
+// Phase1: 実 Firestore に載った cm_version が /api 経由で出て、
+// /api/version が目標版を返し、devices.js にバッジ/診断ロジックが
+// 入っていることを実 API + 本番同型 mux で確認（合成なし。GitHub は
+// latestTag seam で出さない）。
+func TestVersionBadgeAndDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	st := newSt(t, "verpc")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ws.latestTag = func() (string, error) { return "v9.9.9", nil } // seam
+	ck := authCookie(ws)
+	do := func(path string) string {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		req.Header.Set("Cookie", ck)
+		r, _ := noRedir().Do(req)
+		return bodyStr(r)
+	}
+
+	if err := st.RegisterPCVersion(ctx, "v9.9.9"); err != nil {
+		t.Fatalf("RegisterPCVersion: %v", err)
+	}
+	st.PushStatus(ctx, []map[string]any{
+		{"key": "s1", "session_id": "s1", "short_dir": "d1", "is_active": true,
+			"pid": float64(1), "cwd": "/a", "start_time": "x",
+			"cpu_percent": float64(0), "mem_mb": float64(0),
+			"cm_version": "v0.0.1"}, // 旧 inode 相当（目標と不一致＝🔴）
+	})
+
+	if v := do("/api/version"); !strings.Contains(v, `"target":"v9.9.9"`) {
+		t.Fatalf("/api/version 目標版が想定外: %s", v)
+	}
+	if d := do("/api/devices"); !strings.Contains(d, `"cm_version":"v9.9.9"`) {
+		t.Fatalf("/api/devices に PC 版が出ない: %s", d)
+	}
+	if s := do("/api/sessions?pc=verpc"); !strings.Contains(s, `"cm_version":"v0.0.1"`) {
+		t.Fatalf("/api/sessions に proxy 版が出ない: %s", s)
+	}
+	js := do("/static/devices.js")
+	for _, want := range []string{"verBadge", "/api/version", "diagPre", "vbad"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("devices.js に %q が無い（バッジ/診断未配線）", want)
+		}
+	}
+}
+
 func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	st := newSt(t, "web1")
 	ws, ts := newWeb(t, st, fakeGV{})

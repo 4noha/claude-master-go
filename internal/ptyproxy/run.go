@@ -20,6 +20,7 @@ type ProxyOpts struct {
 	SockPath string                  // "" なら SessionsDir/<pid>.sock
 	WinSize  func() (cols, rows int) // host 端末サイズ（nil=80x24）
 	Sigwinch <-chan os.Signal        // リサイズ通知（nil 可）
+	Version  string                  // claude-master バイナリ版（status.json の cm_version。"" で無効）
 }
 
 // RunProxy は claude を PTY ラップして起動し、host stdout + unix socket
@@ -45,6 +46,7 @@ func RunProxy(o ProxyOpts) (int, error) {
 	defer p.Close()
 
 	srv := NewServer(p, cfg, o.HostOut, cols, rows)
+	srv.cmVersion = o.Version // status.json の cm_version（per-proxy 版・旧 inode 検出用）
 
 	sockPath := o.SockPath
 	if sockPath == "" {

@@ -152,6 +152,62 @@ func TestPushStatusVersioning(t *testing.T) {
 	}
 }
 
+// Phase1: per-PC agent 版 と per-session proxy 版(cm_version)が実
+// Firestore に載り、かつ near-$0（cm_version 変化時のみ version++）
+// を実 API で確認（合成なし）。
+func TestVersionReportingNearZero(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-cmver")
+
+	// PC 単位 agent 版
+	if err := c.RegisterPCVersion(ctx, "v0.1.3"); err != nil {
+		t.Fatalf("RegisterPCVersion: %v", err)
+	}
+	snap, err := c.fs.Collection("pcs").Doc("pc-cmver").Get(ctx)
+	if err != nil || snap.Data()["cm_version"] != "v0.1.3" {
+		t.Fatalf("pcs.cm_version が載らない: %v err=%v", snap.Data(), err)
+	}
+	// 旧シグネチャ互換: version 無し → cm_version 書かない
+	if err := c.RegisterPC(ctx); err != nil {
+		t.Fatalf("RegisterPC: %v", err)
+	}
+	snap, _ = c.fs.Collection("pcs").Doc("pc-cmver").Get(ctx)
+	if _, ok := snap.Data()["cm_version"]; ok {
+		t.Fatalf("RegisterPC(無版) で cm_version が残置: %v", snap.Data())
+	}
+
+	// per-session proxy 版。同一 cm_version の再 push は near-$0（changed 0）
+	withVer := func(v string) map[string]any {
+		s := realSession("sid-1", 3.2, true)
+		s["cm_version"] = v
+		return s
+	}
+	if ch, err := c.PushStatus(ctx, []map[string]any{withVer("v0.1.2")}); err != nil || ch != 1 {
+		t.Fatalf("初回 push changed=1: ch=%d err=%v", ch, err)
+	}
+	if ch, _ := c.PushStatus(ctx, []map[string]any{withVer("v0.1.2")}); ch != 0 {
+		t.Fatalf("同一 cm_version 再 push で書込発生（near-$0 違反）: changed=%d", ch)
+	}
+	d := func() map[string]any {
+		sn, _ := c.fs.Collection("pcs").Doc("pc-cmver").
+			Collection("sessions").Doc("sid-1").Get(ctx)
+		return sn.Data()
+	}
+	if d()["cm_version"] != "v0.1.2" {
+		t.Fatalf("session.cm_version 未保存: %v", d())
+	}
+	if v, _ := d()["version"].(int64); v != 1 {
+		t.Fatalf("無差分で version 変動: %v", d()["version"])
+	}
+	// cm_version 変化（旧 inode→更新検出相当）→ version++ ちょうど1回
+	if ch, _ := c.PushStatus(ctx, []map[string]any{withVer("v0.1.3")}); ch != 1 {
+		t.Fatalf("cm_version 変化で changed=1 のはず: %d", ch)
+	}
+	if v, _ := d()["version"].(int64); v != 2 {
+		t.Fatalf("cm_version 変化で version++ されない: %v", d()["version"])
+	}
+}
+
 func TestWatchWakeReceivesRealtimePush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pc := "pc-wake"

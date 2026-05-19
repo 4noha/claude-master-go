@@ -128,6 +128,7 @@ func runProxy(args []string) {
 		HostOut:  os.Stdout,
 		WinSize:  winSize,
 		Sigwinch: sig,
+		Version:  version, // status.json の cm_version（per-proxy 版・🟢/🔴 用）
 	})
 	signal.Stop(sig)
 	if restore != nil {
@@ -406,7 +407,7 @@ func runCloudAgent(cfg *config.Config) {
 	if st.IsSelfRevoked(ctx) {
 		fmt.Fprintln(os.Stderr,
 			"この端末はペアリング解除済（dormant）。再 enroll で復帰します。")
-	} else if err := st.RegisterPC(ctx); err != nil { // 端末一覧に確実に出す
+	} else if err := st.RegisterPCVersion(ctx, version); err != nil { // 端末一覧＋agent 版
 		exitErr(fmt.Errorf("PC 登録失敗: %w", err))
 	}
 	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）。
