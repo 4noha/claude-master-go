@@ -18,13 +18,25 @@ function el(tag, props, txt) {
 }
 
 // 目標版（最新 Release tag）。空＝判定不能→中立表示（誤って全 🔴 に
-// しない）。stripV で先頭 v を無視して比較（v0.1.3 == 0.1.3）。
+// しない）。
 let TARGET = "";
-const stripV = (v) => String(v || "").replace(/^v/, "");
-// 更新あり判定: 版・目標版が共に既知で不一致のときのみ true
-//（不明時は false＝誤って赤にしない＝従来の「誤って全🔴」回避方針）。
+// relNum: 先頭の X.Y.Z（リリース番号）のみ抽出。git describe のビルド
+// 接尾辞 `-<N>-g<hash>` / `-dirty` や `dev` は無視＝**バージョン番号のみで
+// 判定**（タグから N コミット先のビルド差で誤警告しない）。
+const relNum = (v) => { const m = String(v || "").match(/^v?(\d+\.\d+\.\d+)/); return m ? m[1] : ""; };
+// cmpRel: X.Y.Z を数値 semver 比較（-1:a<b / 0:= / 1:a>b）。
+const cmpRel = (a, b) => {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1; }
+  return 0;
+};
+// 更新あり判定: 実行版が目標版より **古い時のみ** true（赤）。
+// ・ビルド接尾辞 -<N>-g<hash>/-dirty は relNum で無視＝番号のみ判定
+// ・先行（開発版が最新 Release より進む）/ 同一 は許容＝警告なし（緑）
+// ・番号が取れない側（dev・不明）は判定不能＝false（誤って赤にしない）
 function updateAvailable(v) {
-  return !!v && !!TARGET && stripV(v) !== stripV(TARGET);
+  const a = relNum(v), b = relNum(TARGET);
+  return a !== "" && b !== "" && cmpRel(a, b) < 0;
 }
 // 状態 ●: 更新あり→赤●（idle でも表示＝要更新機を可視）／でなければ
 // 稼働中→緑●（今までどおり）／idle かつ最新→非表示（従来どおり）。
