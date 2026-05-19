@@ -44,6 +44,42 @@ async function jget(u) {
   return r.json();
 }
 
+// cmTrackScroll: ライブ行（カーソル）を **ブラウザ native スクロール**で
+// 追従し続ける純粋計算。proxy は bottom-fill 撤去後 *上詰めの短い*
+// フレーム（内容 < 500 行・パディング無＝Python parity）を毎フレーム
+// 送り、claude のストリーム/全画面再描画で内容長＝カーソル行が変動
+// する。クライアントが一度しかスクロールを合わせないと:
+//  ・カーソル行が固定スクロールに対し上下する＝**入力位置がズレる**
+//  ・短い内容の下＝固定 500 行グリッドの空き＝**下に黒いエリア**
+// ScrollRenderer の follow/scrollback 不変条件を native スクロールへ
+// 適用して解消する: following 中は沈静バースト毎にカーソル行を可視
+// 下端へ再ピン（位置が常に一定＝ズレない・空きを見ない）／ユーザが
+// 履歴へ遡り（カーソルが可視域より下に隠れる）と following 解除＝
+// スクロールを一切動かさず読書を妨げない／最下部へ戻すと再 following。
+// 純粋＝node で決定論テスト（合成でなく実 static を抽出）。
+// s.mode: "settle"=沈静後の再ピン / "userscroll"=ユーザ操作後の follow
+//         再判定。返り値 {scrollTop, following} を呼び元が適用する。
+function cmTrackScroll(s) {
+  const cellH = s.cellH > 0 ? s.cellH : 1;
+  const maxTop = Math.max(0, s.scrollHeight - s.clientHeight);
+  const clamp = (t) => (t < 0 ? 0 : t > maxTop ? maxTop : t);
+  const cursorPx = (s.cy + 1) * cellH;             // ライブ行の下端 px
+  const pinTop = clamp(cursorPx - s.clientHeight); // カーソル行を可視下端へ
+  if (s.mode === "userscroll") {
+    // ユーザ操作の結果位置から follow を再判定（スクロールは動かさ
+    // ない）。可視下端がカーソル行に届いていれば=ライブ追跡中(緑)、
+    // カーソルが可視域より 1 行以上下へ隠れる程遡ったら=履歴閲覧中
+    // →follow 解除。プログラム的ピン直後の scroll でも geometry は
+    // viewBottom≈cursorPx となり following=true で不変＝guard 不要。
+    const viewBottom = s.scrollTop + s.clientHeight;
+    return { scrollTop: s.scrollTop, following: viewBottom >= cursorPx - cellH };
+  }
+  // mode "settle": following 中だけカーソルを下端へ再ピン。遡り中
+  // (following=false)はユーザのスクロール位置を一切動かさない。
+  if (s.following) return { scrollTop: pinTop, following: true };
+  return { scrollTop: s.scrollTop, following: false };
+}
+
 // アカウント内の全コンソールを端末一覧と同じ順で平坦化（pc→session）。
 // ‹/› ボタンで前後のコンソールへ location 遷移して切り替える。
 async function buildConsoleList() {
@@ -120,33 +156,50 @@ function run() {
     ws.send(resizeFrame(WEB_ROWS, WEB_COLS));
     $("stat").textContent = "接続済";
   };
-  // ページ読込時は claude の **ライブ領域（カーソル行）** が見える位置
-  // へ着地させる。固定 500 行グリッドより idle セッションの内容は短い
-  // ので、物理最下部（=空白パディング）へ飛ばすと真っ白になる
-  // （「バッファが大きすぎ」の正体）。カーソル行を viewport 下端に
-  // 置けば、内容が短くても長くても常にライブ領域＋上に履歴が見える。
-  // また attach 直後は 80x24 catch-up→RESIZE 後 500x160 の順で複数
-  // フレームが来るため、**最初のフレームでなくバースト沈静後に 1 回**
-  // 着地する（最後のフレームから 180ms 静止 or 接続 4s で確定）。
+  // ライブ行（カーソル行）を native スクロールで **追従し続ける**。
+  // 固定 500 行グリッドより idle セッションの内容は短く、proxy は
+  // 上詰めの短いフレームを毎フレーム送る（内容長＝カーソル行が変動）。
+  // 一度しか着地しないと固定スクロールに対しカーソルが流れ「入力位置
+  // ズレ」、内容下の空きグリッドが「黒いエリア」になる。沈静バースト
+  // 毎に cmTrackScroll で再ピンし（位置一定＝ズレない・空きを見ない）、
+  // ユーザが履歴へ遡ったら following 解除して勝手に動かさない。
+  // attach 直後は 80x24 catch-up→RESIZE 後 500x160 と複数フレームが
+  // 来るため、最初のフレームでなく最後から 180ms 静止で沈静確定。
   const host = $("term-host");
-  let landing = true, landTimer = 0;
-  const toCursor = () => {
-    if (!landing) return;
-    landing = false;
-    const cellH = host.scrollHeight / WEB_ROWS; // 1 行 px（全高/行数）
-    let cy = 0;
-    try { cy = term.buffer.active.cursorY | 0; } catch (e) { cy = 0; }
-    const target = (cy + 1) * cellH - host.clientHeight;
-    host.scrollTop = target > 0 ? target : 0; // ライブ行を下端へ
+  let following = true, landTimer = 0;
+  const cursorRow = () => {
+    try {
+      const a = term.buffer.active;
+      return ((a.baseY | 0) + (a.cursorY | 0)) | 0; // scrollback:0 で baseY=0
+    } catch (e) { return 0; }
+  };
+  const stateNow = (mode) => ({
+    mode, following, cy: cursorRow(),
+    cellH: host.scrollHeight / WEB_ROWS, // 1 行 px（全高/行数。固定）
+    clientHeight: host.clientHeight,
+    scrollHeight: host.scrollHeight,
+    scrollTop: host.scrollTop,
+  });
+  // 沈静バースト後の再ピン（following 中のみスクロールを動かす）。
+  const settle = () => {
+    const r = cmTrackScroll(stateNow("settle"));
+    following = r.following;
+    if (r.scrollTop !== host.scrollTop) host.scrollTop = r.scrollTop;
   };
   const scheduleLand = () => {
-    if (!landing) return;
     clearTimeout(landTimer);
     landTimer = setTimeout(
-      () => requestAnimationFrame(() => requestAnimationFrame(toCursor)),
-      180); // 最後のフレームから静止したら確定（idle: RESIZE 後すぐ）
+      () => requestAnimationFrame(() => requestAnimationFrame(settle)),
+      180); // 最後のフレームから静止したら沈静確定（idle: RESIZE 後すぐ）
   };
-  setTimeout(toCursor, 4000); // 連続出力で沈静しなくても 4s で 1 回着地
+  setTimeout(settle, 4000); // 連続出力で沈静しなくても 4s で 1 回着地
+  // ユーザの native スクロールから follow 状態だけ再判定（スクロール
+  // 位置は動かさない）。内容成長は scrollTop を変えず scroll を発火
+  // しない＝このハンドラはピン代入かユーザ操作のみ＝geometry で安全。
+  host.addEventListener("scroll", () => {
+    const r = cmTrackScroll(stateNow("userscroll"));
+    following = r.following;
+  }, { passive: true });
   // 同期更新シム（DECSET 2026）: proxy の ESC[?2026h..l フレームを 1 回の
   // term.write に束ね、xterm.js(2026 未対応)の ESC[2J チラ見せ＝チカチカを
   // 解消。ws メッセージ境界でマーカーが割れても carry で再結合（sync.js）。
