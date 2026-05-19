@@ -227,6 +227,33 @@ function run() {
     };
   }
 
+  // 「再起動」: このセッションを restart-proxy（--resume で別プロセス
+  // 復帰）。UUID 鍵セッションのみ表示（pid- は復帰不可＝backend も拒否）。
+  // 既存 owner 限定 POST /api/command を再利用（バックエンド無改変）。
+  const rstB = $("restart");
+  if (rstB && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(sid)) {
+    rstB.style.display = "";
+    rstB.onclick = async () => {
+      if (!confirm((dir || sid) + "\n現在の claude を終了し --resume で別" +
+        "プロセスとして復帰します。\nこの画面/元の端末には自動では戻り" +
+        "ません（復帰後あらためて開いてください）。\nよろしいですか？")) return;
+      rstB.disabled = true;
+      try {
+        const body = new URLSearchParams({ pc, cmd: "restart-proxy", sid });
+        const r = await fetch("/api/command", {
+          method: "POST", headers: { Accept: "application/json",
+            "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        });
+        if (r.status === 401) { location.href = "/login"; return; }
+        if (!r.ok) throw new Error("投入失敗 " + r.status);
+        $("stat").textContent = "restart-proxy 投入（復帰は別プロセス・履歴で監査）";
+      } catch (e) {
+        if (e.message !== "unauth") alert("エラー: " + e.message);
+      } finally { rstB.disabled = false; }
+    };
+  }
+
   // window resize / ズーム / スクロール / URL バーでは **何もしない**
   // （意図的にハンドラ無し＝RESIZE 逆流の暴走を構造的に防止）。
 }

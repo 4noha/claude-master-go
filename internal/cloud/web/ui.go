@@ -98,6 +98,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  #bar{padding:6px 12px;background:#161616;display:flex;gap:10px;
   align-items:center;font-size:13px}
  #bar a{color:#7ab;text-decoration:none}
+ #ctrls{margin-left:auto;display:flex;gap:10px;align-items:center}
  #title{font-weight:600;color:#eee}
  #pos{color:#9aa;font-size:12px}
  .nav{background:#2a2a30;color:#cde;border:0;border-radius:6px;
@@ -110,12 +111,15 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <body>
 <div id="bar">
  <a href="/">← 一覧</a>
- <button class="nav" id="prev" title="前のコンソール">‹</button>
  <span id="title"></span><span id="pos"></span>
- <button class="nav" id="next" title="次のコンソール">›</button>
- <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
- <input type="file" accept="image/*" id="imgfile" style="display:none">
- <span id="stat" style="margin-left:auto"></span>
+ <span id="ctrls">
+  <button class="nav" id="prev" title="前のコンソール">‹</button>
+  <button class="nav" id="next" title="次のコンソール">›</button>
+  <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
+  <button class="nav" id="restart" title="このセッションを再起動(--resume 復帰)" style="display:none">再起動</button>
+  <input type="file" accept="image/*" id="imgfile" style="display:none">
+  <span id="stat"></span>
+ </span>
 </div>
 <div id="term"><div id="term-host"></div></div>
 <script src="/static/xterm.js"></script>

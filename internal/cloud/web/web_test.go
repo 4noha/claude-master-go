@@ -413,6 +413,10 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		!strings.Contains(tb, `accept="image/*"`) {
 		t.Fatal("/term に画像ボタン/ファイル入力が無い（モバイル経路欠落）")
 	}
+	// セッション再起動ボタン（restart-proxy）＋コントロール右寄せラッパ
+	if !strings.Contains(tb, `id="restart"`) || !strings.Contains(tb, `id="ctrls"`) {
+		t.Fatal("/term に再起動ボタン/コントロール右寄せ(#ctrls)が無い")
+	}
 	// 固定論理サイズ＋native スクロール設計の CSS。pull-to-refresh は
 	// document 固定＋overscroll-behavior:none、#term-host は
 	// overscroll-behavior:contain でスクロール連鎖も断つ。native
@@ -437,6 +441,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "sendImageBlob"},  // 画像送信共通化
 		{"/static/term.js", "clipboard.read"}, // モバイル: Clipboard API
 		{"/static/term.js", "imgfile"},        // モバイル: 写真ピッカー fallback
+		{"/static/term.js", "restart-proxy"},  // セッション再起動（/api/command 再利用）
 		{"/static/term.js", "scrollHeight"},   // 読込時スクロール計算
 		{"/static/term.js", "cursorY"},        // ライブ行へ着地（空白回避）
 		{"/static/devices.js", "/term?pc="},
