@@ -228,10 +228,11 @@ function run() {
   }
 
   // 「再起動」: このセッションを restart-proxy（--resume で別プロセス
-  // 復帰）。UUID 鍵セッションのみ表示（pid- は復帰不可＝backend も拒否）。
-  // 既存 owner 限定 POST /api/command を再利用（バックエンド無改変）。
+  // 復帰）。**全セッションに表示**。pid- は backend が claude の jsonl
+  // から会話 UUID を自動解決して復帰（解決不可は履歴にエラー＝kill
+  // せず保全）。既存 owner 限定 POST /api/command を再利用（無改変）。
   const rstB = $("restart");
-  if (rstB && /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(sid)) {
+  if (rstB) {
     rstB.style.display = "";
     rstB.onclick = async () => {
       if (!confirm((dir || sid) + "\n現在の claude を終了し --resume で別" +

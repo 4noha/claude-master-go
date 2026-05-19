@@ -497,6 +497,14 @@ func runCloudAgent(cfg *config.Config) {
 			}
 			return 0, "", false
 		},
+		ResolveUUID: func(cwd string) (string, bool) {
+			home, e := os.UserHomeDir()
+			if e != nil {
+				return "", false
+			}
+			return agent.ResolveClaudeUUID(
+				filepath.Join(home, ".claude", "projects"), cwd)
+		},
 		Kill:  killProxy,
 		Spawn: spawnResumeProxy,
 	}

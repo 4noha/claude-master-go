@@ -175,9 +175,10 @@ async function main() {
             pre.style.display = pre.style.display === "none" ? "block" : "none";
           };
           right.appendChild(diagBtn);
-          // 復帰可能（UUID 鍵）のみ「再起動(復帰)」を出す。pid- 等は
-          // --resume 不可なので非表示（誤操作防止）。
-          if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(x.key || "")) {
+          // 全セッションに「再起動(復帰)」。pid- は backend が claude の
+          // jsonl から会話 UUID を自動解決して復帰（解決不可は履歴に
+          // エラー＝kill せず保全）。
+          {
             const rb = el("button", { className: "diag-btn" }, "再起動(復帰)");
             rb.onclick = async () => {
               if (!confirm(d.id + " / " + dir + "\n現在の claude を終了し " +
