@@ -63,34 +63,35 @@ func (c *Client) PushCommand(ctx context.Context, pc, cmd, sid, requestedBy stri
 // fn は claim 成功（pending→running を transaction で1度だけ）した命令
 // のみ受ける＝Snapshot 再配信や複数 agent でも二重実行しない。
 func (c *Client) WatchCommands(ctx context.Context, fn func(Command)) error {
-	it := c.cmdCol(c.pcID).Where("status", "==", "pending").Snapshots(ctx)
-	defer it.Stop()
-	for {
-		qs, err := it.Next()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+	return keepSubscribed(ctx, func() (func() error, func()) {
+		it := c.cmdCol(c.pcID).Where("status", "==", "pending").Snapshots(ctx)
+		pump := func() error {
+			for {
+				qs, err := it.Next()
+				if err != nil {
+					return err // 終端 → keepSubscribed が再購読（resident 死なない）
+				}
+				if qs == nil {
+					continue
+				}
+				for _, ch := range qs.Changes {
+					if ch.Kind == firestore.DocumentRemoved {
+						continue
+					}
+					var cm Command
+					if e := ch.Doc.DataTo(&cm); e != nil || cm.Status != "pending" {
+						continue
+					}
+					if !c.claimCommand(ctx, cm.ID) {
+						continue
+					}
+					cm.Status = "running"
+					fn(cm)
+				}
 			}
-			return err
 		}
-		if qs == nil {
-			continue
-		}
-		for _, ch := range qs.Changes {
-			if ch.Kind == firestore.DocumentRemoved {
-				continue
-			}
-			var cm Command
-			if e := ch.Doc.DataTo(&cm); e != nil || cm.Status != "pending" {
-				continue
-			}
-			if !c.claimCommand(ctx, cm.ID) {
-				continue
-			}
-			cm.Status = "running"
-			fn(cm)
-		}
-	}
+		return pump, func() { it.Stop() }
+	})
 }
 
 // claimCommand は pending→running を transaction で1度だけ成功させる。

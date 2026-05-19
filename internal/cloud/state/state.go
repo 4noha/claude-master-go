@@ -209,18 +209,18 @@ func (c *Client) DeletePCByID(ctx context.Context, pcID string) error {
 // クリーンに戻る。連続変更はバースト的に来るので呼び出し側で冪等な
 // reconcile を行うこと。
 func (c *Client) WatchSessions(ctx context.Context, cb func()) error {
-	it := c.fs.CollectionGroup("sessions").Snapshots(ctx)
-	defer it.Stop()
-	for {
-		_, err := it.Next()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+	return keepSubscribed(ctx, func() (func() error, func()) {
+		it := c.fs.CollectionGroup("sessions").Snapshots(ctx)
+		pump := func() error {
+			for {
+				if _, err := it.Next(); err != nil {
+					return err // 終端 → keepSubscribed が再購読（resident は死なない）
+				}
+				cb()
 			}
-			return err
 		}
-		cb()
-	}
+		return pump, func() { it.Stop() }
+	})
 }
 
 // ListPCs は pcs/* の PC（端末）id 一覧（アカウント全体 scope 用）。
@@ -311,23 +311,24 @@ func (c *Client) Wake(ctx context.Context, targetPC, sid string) error {
 // 変更ごとに cb(sid) を呼ぶ。ctx 終了でクリーンに戻る。これが
 // 「PC 発 idle gRPC stream」で NAT を越える wake 受信経路。
 func (c *Client) WatchWake(ctx context.Context, cb func(sid string)) error {
-	it := c.fs.Collection("wake").Doc(c.pcID).Snapshots(ctx)
-	defer it.Stop()
-	for {
-		snap, err := it.Next()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil // 正常終了（ctx cancel）
+	return keepSubscribed(ctx, func() (func() error, func()) {
+		it := c.fs.Collection("wake").Doc(c.pcID).Snapshots(ctx)
+		pump := func() error {
+			for {
+				snap, err := it.Next()
+				if err != nil {
+					return err // 終端（iterator.Done 等）→ keepSubscribed が再購読
+				}
+				if snap == nil || !snap.Exists() {
+					continue
+				}
+				if sid, ok := snap.Data()["sid"].(string); ok && sid != "" {
+					cb(sid)
+				}
 			}
-			return err
 		}
-		if snap == nil || !snap.Exists() {
-			continue
-		}
-		if sid, ok := snap.Data()["sid"].(string); ok && sid != "" {
-			cb(sid)
-		}
-	}
+		return pump, func() { it.Stop() }
+	})
 }
 
 // relayGrantID は relaygrants/ の doc id。sid と role の組で一意
