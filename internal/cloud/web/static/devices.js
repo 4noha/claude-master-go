@@ -43,6 +43,33 @@ function diagPre(x) {
   return el("pre", { className: "diag" }, JSON.stringify(o, null, 2));
 }
 
+// 遠隔命令投入（owner のみ・POST）。実行前 confirm は呼び元で。
+async function postCmd(pc, cmd, sid) {
+  const body = new URLSearchParams({ pc, cmd, sid: sid || "" });
+  const r = await fetch("/api/command", {
+    method: "POST", headers: { Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (r.status === 401) { location.href = "/login"; throw new Error("unauth"); }
+  if (!r.ok) throw new Error("投入失敗 " + r.status);
+  return r.json();
+}
+
+// 命令監査（新しい順）を開閉表示。
+async function cmdAudit(pc) {
+  const cs = await jget("/api/commands?pc=" + encodeURIComponent(pc));
+  const box = el("div", { className: "diag" });
+  if (!cs.length) { box.textContent = "（命令履歴なし）"; return box; }
+  for (const c of cs) {
+    box.appendChild(el("div", null,
+      (c.ts || "") + "  " + c.cmd + (c.sid ? "(" + c.sid + ")" : "") +
+      "  [" + c.status + "] " + (c.detail || "") +
+      "  by " + (c.requested_by || "?")));
+  }
+  return box;
+}
+
 async function main() {
   try {
     try { TARGET = (await jget("/api/version")).target || ""; } catch (e) { TARGET = ""; }
@@ -56,6 +83,34 @@ async function main() {
       const h2 = el("h2", null, d.id);
       h2.appendChild(verBadge(d.cm_version)); // PC(agent) 版
       head.appendChild(h2);
+      const ops = el("span");
+      const mkOp = (label, cmd, msg) => {
+        const b = el("button", { className: "diag-btn" }, label);
+        b.onclick = async () => {
+          if (!confirm(d.id + ": " + msg + "\nよろしいですか？")) return;
+          b.disabled = true;
+          try {
+            await postCmd(d.id, cmd, "");
+            $("stat").textContent = d.id + " へ " + cmd + " を投入（監査は履歴で）";
+          } catch (e) {
+            if (e.message !== "unauth") alert("エラー: " + e.message);
+          } finally { b.disabled = false; }
+        };
+        return b;
+      };
+      ops.appendChild(mkOp("再起動", "restart-agent",
+        "claude-master の launchd 2 デーモンを再起動します（数秒の同期断）。"));
+      ops.appendChild(mkOp("更新", "self-update",
+        "最新 Release へ自己更新し再起動します（古い場合のみ）。"));
+      const hist = el("button", { className: "diag-btn" }, "履歴");
+      const histBox = el("div");
+      hist.onclick = async () => {
+        if (histBox.firstChild) { histBox.textContent = ""; return; }
+        try { histBox.appendChild(await cmdAudit(d.id)); }
+        catch (e) { if (e.message !== "unauth") alert("エラー: " + e.message); }
+      };
+      ops.appendChild(hist);
+      head.appendChild(ops);
       const del = el("button", { className: "del" }, "ペアリング削除");
       del.onclick = async () => {
         if (!confirm(d.id + " のペアリングを削除します。\n" +
@@ -75,6 +130,7 @@ async function main() {
       };
       head.appendChild(del);
       card.appendChild(head);
+      card.appendChild(histBox);
       card.appendChild(el("div", { className: "meta" },
         "セッション " + d.sessions + " 件（稼働中 " + d.active + "）"));
       const ss = await jget("/api/sessions?pc=" + encodeURIComponent(d.id));

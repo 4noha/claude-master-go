@@ -100,6 +100,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
 	mux.HandleFunc("/api/version", s.apiGuard(s.apiVersion)) // 目標版（🟢/🔴 判定用）
 	mux.HandleFunc("/api/pc/delete", s.apiGuard(s.apiDeletePC)) // 端末ペアリング削除
+	mux.HandleFunc("/api/command", s.apiGuard(s.apiCommand))   // 遠隔命令投入（owner・POST）
+	mux.HandleFunc("/api/commands", s.apiGuard(s.apiCommands)) // 命令監査一覧（GET）
 	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll)) // 端末追加コード発行
 	mux.HandleFunc("/enroll", s.enroll)                    // 新 PC が code 交換
 	mux.HandleFunc("/ws", s.wsViewer)
@@ -331,6 +333,57 @@ func relayWSS(r *http.Request) string {
 }
 
 // apiEnroll: ログイン中のアカウントに端末を追加するための一回限り
+// apiCommand: 遠隔命令を投入（owner 限定＋実行前確認＋監査）。
+// 破壊的なので **POST 限定**（GET だと画像/CSRF で誤発火＝apiDeletePC
+// 同様）。cookie 必須(apiGuard)＋スコープ検証で owner のみ。実行前確認
+// は devices.js の confirm()。requested_by に login email を残す。agent
+// 側でも revocation 検査＋コマンド allowlist を再検証（多層）。
+func (s *Server) apiCommand(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"post only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	pc := r.FormValue("pc")
+	cmd := r.FormValue("cmd")
+	sid := r.FormValue("sid")
+	if pc == "" || !s.allows(t, pc) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	if !state.ValidCommands[cmd] {
+		http.Error(w, `{"error":"bad command"}`, http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	id, err := s.st.PushCommand(ctx, pc, cmd, sid, t.PC)
+	if err != nil {
+		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id})
+}
+
+// apiCommands: 命令監査一覧（新しい順）。owner のみ・スコープ検証。
+func (s *Server) apiCommands(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	pc := r.URL.Query().Get("pc")
+	if pc == "" || !s.allows(t, pc) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	cs, err := s.st.RecentCommands(ctx, pc, 20)
+	if err != nil {
+		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
+		return
+	}
+	if cs == nil {
+		cs = []state.Command{}
+	}
+	json.NewEncoder(w).Encode(cs)
+}
+
 // enroll コードを発行（cookie 必須＝アカウント所有者のみ）。新 PC で
 // 表示コマンドを実行すると enroll で交換される。
 func (s *Server) apiEnroll(w http.ResponseWriter, r *http.Request, t webauth.Token) {

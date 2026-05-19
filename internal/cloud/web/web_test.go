@@ -270,6 +270,63 @@ func TestVersionBadgeAndDiagnostics(t *testing.T) {
 	}
 }
 
+// Phase2: 遠隔命令 API。owner(cookie)のみ POST 可・GET 不可・不正
+// コマンド拒否・未認証 401・監査に requested_by。実 Firestore＋本番
+// mux（合成なし）。
+func TestRemoteCommandOwnerOnly(t *testing.T) {
+	st := newSt(t, "cmdweb")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+	form := func(cmd string) *http.Response {
+		req, _ := http.NewRequest("POST", ts.URL+"/api/command",
+			strings.NewReader("pc=cmdweb&cmd="+cmd))
+		req.Header.Set("Cookie", ck)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r, _ := noRedir().Do(req)
+		return r
+	}
+	// 未認証 POST → 401（apiGuard）
+	r, _ := http.Post(ts.URL+"/api/command", "application/x-www-form-urlencoded",
+		strings.NewReader("pc=cmdweb&cmd=restart-agent"))
+	if r.StatusCode != 401 {
+		t.Fatalf("未認証 /api/command が 401 でない: %d", r.StatusCode)
+	}
+	// GET 不可（破壊的＝POST 限定）
+	greq, _ := http.NewRequest("GET", ts.URL+"/api/command?pc=cmdweb&cmd=restart-agent", nil)
+	greq.Header.Set("Cookie", ck)
+	if g, _ := noRedir().Do(greq); g.StatusCode != 405 {
+		t.Fatalf("GET /api/command が 405 でない: %d", g.StatusCode)
+	}
+	// 不正コマンド → 400
+	if br := form("rm-rf"); br.StatusCode != 400 {
+		t.Fatalf("不正コマンドが 400 でない: %d", br.StatusCode)
+	}
+	// 正常: owner POST → 200 + id
+	ok := form("restart-agent")
+	if ok.StatusCode != 200 || !strings.Contains(bodyStr(ok), `"ok":true`) {
+		t.Fatalf("owner restart-agent 投入が 200/ok でない: %d", ok.StatusCode)
+	}
+	// 監査: requested_by に login email、status pending（agent 未起動）
+	areq, _ := http.NewRequest("GET", ts.URL+"/api/commands?pc=cmdweb", nil)
+	areq.Header.Set("Cookie", ck)
+	ar, _ := noRedir().Do(areq)
+	ab := bodyStr(ar)
+	if !strings.Contains(ab, `"requested_by":"`+allowEmail+`"`) ||
+		!strings.Contains(ab, `"cmd":"restart-agent"`) {
+		t.Fatalf("命令監査が想定外: %s", ab)
+	}
+	// devices.js に投入ロジックがある
+	jq, _ := http.NewRequest("GET", ts.URL+"/static/devices.js", nil)
+	jq.Header.Set("Cookie", ck)
+	jr, _ := noRedir().Do(jq)
+	js := bodyStr(jr)
+	for _, want := range []string{"postCmd", "/api/command", "restart-agent", "self-update"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("devices.js に %q が無い（命令 UI 未配線）", want)
+		}
+	}
+}
+
 func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	st := newSt(t, "web1")
 	ws, ts := newWeb(t, st, fakeGV{})

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -480,6 +481,21 @@ func runCloudAgent(cfg *config.Config) {
 	} else {
 		fmt.Fprintln(os.Stderr, "remote tmux 同期スキップ（tmux 無し）:", merr)
 	}
+	// 遠隔命令制御線（owner 限定は web 側・ここは多層防御で revocation
+	// 再検査）。WatchWake と独立の常時・無料 listener。
+	cr := &agent.CommandRunner{
+		St:        st,
+		DoRestart: func(context.Context) error { return restartDaemons() },
+		DoUpdate: func(context.Context) (string, bool, error) {
+			return selfupdate.Update(version)
+		},
+	}
+	go func() {
+		if err := cr.Run(ctx); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, "command watcher 終了:", err)
+		}
+	}()
+
 	ag := &agent.Agent{
 		St: st, RelayURL: cfg.CloudRelayURL,
 		ResolveSock: resolveSock(cfg), IdleClose: 30 * time.Second,
@@ -489,6 +505,18 @@ func runCloudAgent(cfg *config.Config) {
 	if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
 		exitErr(err)
 	}
+}
+
+// restartDaemons は launchd の monitor/cloud 2 デーモンを kickstart -k
+// で再起動（cloud 自身も含むため自分は SIGKILL→launchd 再生で新バイナリ
+// に載る。それゆえ呼び元は Ack 先行）。
+func restartDaemons() error {
+	dom := fmt.Sprintf("gui/%d", os.Getuid())
+	// monitor を先に（cloud を後＝自己 kill 前に他方を確実に発火）
+	_ = exec.Command("launchctl", "kickstart", "-k",
+		dom+"/com.4noha.claude-master").Run()
+	return exec.Command("launchctl", "kickstart", "-k",
+		dom+"/com.4noha.claude-master-cloud").Run()
 }
 
 func runCloudAttach(cfg *config.Config, args []string) {

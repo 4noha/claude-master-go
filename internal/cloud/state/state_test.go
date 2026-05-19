@@ -208,6 +208,58 @@ func TestVersionReportingNearZero(t *testing.T) {
 	}
 }
 
+// Phase2: 遠隔命令チャネルを実 Firestore で検証。投入→realtime watch
+// が claim(pending→running)して1回だけ受信→二重 claim 不可→Ack 監査
+// 書戻し→不正コマンド拒否→RecentCommands。合成なし。
+func TestCommandChannelClaimOnceAndAudit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newClient(t, "pc-cmd")
+
+	got := make(chan Command, 8)
+	wErr := make(chan error, 1)
+	go func() { wErr <- c.WatchCommands(ctx, func(cm Command) { got <- cm }) }()
+	time.Sleep(1500 * time.Millisecond) // listener attach 待ち
+
+	id, err := c.PushCommand(ctx, "pc-cmd", "restart-agent", "", "owner@example.com")
+	if err != nil || id == "" {
+		t.Fatalf("PushCommand: id=%q err=%v", id, err)
+	}
+	var rcv Command
+	select {
+	case rcv = <-got:
+		if rcv.ID != id || rcv.Cmd != "restart-agent" ||
+			rcv.RequestedBy != "owner@example.com" || rcv.Status != "running" {
+			t.Fatalf("受信命令が想定外: %+v", rcv)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("realtime 命令を受信できない（制御線不成立）")
+	}
+
+	// 二重 claim 不可（再配信されても fn は再呼出されない＝既 running）
+	if c.claimCommand(ctx, id) {
+		t.Fatal("running 命令を再 claim できてしまう（二重実行リスク）")
+	}
+
+	// Ack 監査書戻し
+	if err := c.AckCommand(ctx, id, "done", "kicked 2 daemons"); err != nil {
+		t.Fatalf("AckCommand: %v", err)
+	}
+	rc, err := c.RecentCommands(ctx, "pc-cmd", 5)
+	if err != nil || len(rc) == 0 {
+		t.Fatalf("RecentCommands: n=%d err=%v", len(rc), err)
+	}
+	if rc[0].Status != "done" || rc[0].Detail != "kicked 2 daemons" ||
+		rc[0].FinishedAt == "" {
+		t.Fatalf("監査が記録されていない: %+v", rc[0])
+	}
+
+	// 不正コマンドは web 投入時点で拒否
+	if _, err := c.PushCommand(ctx, "pc-cmd", "rm-rf", "", "owner@example.com"); err == nil {
+		t.Fatal("未知コマンドが拒否されない（allowlist 不全）")
+	}
+}
+
 func TestWatchWakeReceivesRealtimePush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pc := "pc-wake"
