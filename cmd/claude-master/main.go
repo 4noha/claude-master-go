@@ -483,12 +483,29 @@ func runCloudAgent(cfg *config.Config) {
 	}
 	// 遠隔命令制御線（owner 限定は web 側・ここは多層防御で revocation
 	// 再検査）。WatchWake と独立の常時・無料 listener。
+	pr := &agent.ProxyRestarter{
+		Lookup: func(sid string) (int, string, bool) {
+			for _, s := range statusSessions(cfg) {
+				if k, _ := s["key"].(string); k == sid {
+					pidf, _ := s["pid"].(float64)
+					cwd, _ := s["cwd"].(string)
+					if int(pidf) > 0 {
+						return int(pidf), cwd, true
+					}
+				}
+			}
+			return 0, "", false
+		},
+		Kill:  killProxy,
+		Spawn: spawnResumeProxy,
+	}
 	cr := &agent.CommandRunner{
 		St:        st,
 		DoRestart: func(context.Context) error { return restartDaemons() },
 		DoUpdate: func(context.Context) (string, bool, error) {
 			return selfupdate.Update(version)
 		},
+		DoProxy: pr.Restart,
 	}
 	go func() {
 		if err := cr.Run(ctx); err != nil && ctx.Err() == nil {
@@ -517,6 +534,53 @@ func restartDaemons() error {
 		dom+"/com.4noha.claude-master").Run()
 	return exec.Command("launchctl", "kickstart", "-k",
 		dom+"/com.4noha.claude-master-cloud").Run()
+}
+
+// killProxy は proxy を SIGTERM→3s 猶予→生存なら SIGKILL（子 claude も
+// 同時に落ちる）。既に不在なら成功扱い。
+func killProxy(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("不正 pid")
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		if err == syscall.ESRCH {
+			return nil // 既に不在
+		}
+		return err
+	}
+	for i := 0; i < 30; i++ {
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	return nil
+}
+
+// spawnResumeProxy は `claude-master proxy --resume <sid>` を cwd で
+// detached（setsid・stdio=/dev/null）起動。元端末へは戻らないが unix
+// socket を出すので web/cloud 経由で会話を復帰できる。claude --resume
+// の再ストリーム/SESSION_LOG/dedup 不変は ptyproxy 側で既に担保。
+func spawnResumeProxy(sid, cwd string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	c := exec.Command(self, "proxy", "--resume", sid)
+	if cwd != "" {
+		c.Dir = cwd
+	}
+	devnull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if devnull != nil {
+		c.Stdin, c.Stdout, c.Stderr = devnull, devnull, devnull
+	}
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // agent と独立に存続
+	if err := c.Start(); err != nil {
+		return err
+	}
+	_ = c.Process.Release()
+	return nil
 }
 
 func runCloudAttach(cfg *config.Config, args []string) {

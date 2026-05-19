@@ -320,7 +320,8 @@ func TestRemoteCommandOwnerOnly(t *testing.T) {
 	jq.Header.Set("Cookie", ck)
 	jr, _ := noRedir().Do(jq)
 	js := bodyStr(jr)
-	for _, want := range []string{"postCmd", "/api/command", "restart-agent", "self-update"} {
+	for _, want := range []string{"postCmd", "/api/command", "restart-agent",
+		"self-update", "restart-proxy"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("devices.js に %q が無い（命令 UI 未配線）", want)
 		}

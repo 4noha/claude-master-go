@@ -153,6 +153,25 @@ async function main() {
             pre.style.display = pre.style.display === "none" ? "block" : "none";
           };
           right.appendChild(diagBtn);
+          // 復帰可能（UUID 鍵）のみ「再起動(復帰)」を出す。pid- 等は
+          // --resume 不可なので非表示（誤操作防止）。
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(x.key || "")) {
+            const rb = el("button", { className: "diag-btn" }, "再起動(復帰)");
+            rb.onclick = async () => {
+              if (!confirm(d.id + " / " + dir + "\n現在の claude を終了し " +
+                "--resume で別プロセスとして復帰します。\n" +
+                "元の端末（VSCode 等）には戻りません（Web/cloud で続行）。\n" +
+                "よろしいですか？")) return;
+              rb.disabled = true;
+              try {
+                await postCmd(d.id, "restart-proxy", x.key);
+                $("stat").textContent = dir + " へ restart-proxy 投入（履歴で監査）";
+              } catch (e) {
+                if (e.message !== "unauth") alert("エラー: " + e.message);
+              } finally { rb.disabled = false; }
+            };
+            right.appendChild(rb);
+          }
           const a = el("a", {
             href: "/term?pc=" + encodeURIComponent(d.id) +
               "&sid=" + encodeURIComponent(x.key) +
