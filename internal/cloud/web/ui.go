@@ -67,7 +67,7 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <a class="logout" href="/auth/logout">ログアウト</a></header>
 <main>
  <p style="color:#9aa;font-size:13px">アカウントに接続されている端末です。
-  セッションの「Web ターミナルを開く」から Web インターフェースに接続します。</p>
+  セッションの「開く」から Web インターフェースに接続します。</p>
  <button id="addbtn" style="padding:8px 14px;font:14px system-ui;
   background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer">
   ＋ 端末を追加</button>

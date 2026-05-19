@@ -111,7 +111,7 @@ async function main() {
       };
       ops.appendChild(hist);
       head.appendChild(ops);
-      const del = el("button", { className: "del" }, "ペアリング削除");
+      const del = el("button", { className: "del" }, "削除");
       del.onclick = async () => {
         if (!confirm(d.id + " のペアリングを削除します。\n" +
           "（一覧から消えます。その PC は再 enroll で復帰可能）")) return;
@@ -176,7 +176,7 @@ async function main() {
             href: "/term?pc=" + encodeURIComponent(d.id) +
               "&sid=" + encodeURIComponent(x.key) +
               "&dir=" + encodeURIComponent(dir),
-          }, "Web ターミナルを開く");
+          }, "開く");
           right.appendChild(a);
           row.appendChild(right);
           card.appendChild(row);

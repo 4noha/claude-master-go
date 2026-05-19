@@ -440,7 +440,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},       // 一覧→term へ dir 受渡し
 		{"/static/devices.js", "/api/pc/delete"}, // ペアリング削除呼出
-		{"/static/devices.js", "ペアリング削除"},   // 削除ボタン
+		{"/static/devices.js", "\"削除\""},   // 削除ボタン（旧:ペアリング削除）
 	} {
 		if !strings.Contains(bodyStr(do(a.p)), a.want) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)
