@@ -153,9 +153,6 @@ func (s *Server) acceptLoop() {
 			conn: conn, sr: screen.NewScrollRenderer(),
 			cols: 80, rows: 24, // RESIZE 受信まで既定
 		}
-		// client（Web/socket-client）は短内容を下詰め（Web 大グリッドで
-		// 上部張り付き解消）。host=hostSR は呼ばない＝実端末/IME 不変。
-		c.sr.EnableBottomFill()
 		s.mu.Lock()
 		s.clients[c] = struct{}{}
 		s.renderClientLocked(c) // attach catch-up（現 VT を即送る）

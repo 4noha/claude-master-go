@@ -19,18 +19,9 @@ type ScrollRenderer struct {
 	anchor    int // not-follow 時の viewport 先頭絶対 oy
 	lastMaxOy int // 直近 render の max_oy（Scroll() が screen 非依存なため）
 	lastOy    int // 直近 render の viewport 先頭絶対行（カーソル相対変換用）
-	// bottomFill: follow 中かつ内容 < vrows のとき先頭へ空行を積み
-	// **下詰め**する（Web の大グリッドで短内容が上部に出る問題用）。
-	// 既定 false＝host/既存テストは従来どおり上詰め（不変条件保持）。
-	// not-follow（履歴遡り）時は常に無効＝絶対アンカー不変。
-	bottomFill bool
 }
 
 func NewScrollRenderer() *ScrollRenderer { return &ScrollRenderer{follow: true} }
-
-// EnableBottomFill は下詰めを有効化（client=c.sr 用。host=hostSR は
-// 呼ばない＝実端末/IME 挙動は無改変）。
-func (s *ScrollRenderer) EnableBottomFill() { s.bottomFill = true }
 
 func (s *ScrollRenderer) FollowActive() bool { return s.follow }
 
@@ -240,20 +231,10 @@ func (s *ScrollRenderer) ViewCells(hist, vis [][]cell, vrows int) [][]cell {
 // 画面最下部へ(_CLEAR_SEQ 規律)、行毎 appendRow、末尾 \x1b[?2026l）。
 func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	rows := s.ViewCells(v.hist, v.buf, vrows)
-	// 下詰め: follow 中かつ内容が viewport 未充足なら先頭に空行を積む
-	// （Web 大グリッドで短内容が上部に張り付くのを解消）。not-follow
-	// （履歴遡り）は絶対アンカー不変のため pad=0。既定(host)も pad=0。
-	pad := 0
-	if s.bottomFill && s.follow && len(rows) < vrows {
-		pad = vrows - len(rows)
-	}
 	var b strings.Builder
 	b.WriteString("\x1b[?2026h")        // synchronized output begin
 	b.WriteString("\x1b[2J\x1b[9999;1H") // _CLEAR_SEQ: 全消去→最下部
 	b.WriteString("\x1b[H")
-	for p := 0; p < pad; p++ {
-		b.WriteString("\r\n") // 先頭空行で内容を下端へ
-	}
 	for i, row := range rows {
 		appendRow(&b, row, vcols)
 		if i+1 < len(rows) {
@@ -266,8 +247,8 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	// が無いため露見しにくいが同じ不具合）。cx は draw() が runewidth
 	// で進める表示桁なので全角でも正しい。viewport 外（nav 遡り中）は
 	// 出さない＝従来挙動を維持（読書中で IME 非使用）。
-	cur := len(v.hist) + v.cy        // hist+vis 連結での絶対行
-	crow := cur - s.lastOy + 1 + pad // viewport 内 1-based 行（下詰め分 +pad）
+	cur := len(v.hist) + v.cy  // hist+vis 連結での絶対行
+	crow := cur - s.lastOy + 1 // viewport 内 1-based 行
 	ccol := v.cx + 1                 // 表示桁 1-based
 	if crow >= 1 && crow <= vrows {
 		if ccol < 1 {
