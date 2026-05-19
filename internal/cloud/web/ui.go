@@ -119,5 +119,6 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 </div>
 <div id="term"><div id="term-host"></div></div>
 <script src="/static/xterm.js"></script>
+<script src="/static/sync.js"></script>
 <script src="/static/term.js"></script>
 </body></html>`

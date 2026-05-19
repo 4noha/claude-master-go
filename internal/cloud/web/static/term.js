@@ -147,8 +147,12 @@ function run() {
       180); // 最後のフレームから静止したら確定（idle: RESIZE 後すぐ）
   };
   setTimeout(toCursor, 4000); // 連続出力で沈静しなくても 4s で 1 回着地
+  // 同期更新シム（DECSET 2026）: proxy の ESC[?2026h..l フレームを 1 回の
+  // term.write に束ね、xterm.js(2026 未対応)の ESC[2J チラ見せ＝チカチカを
+  // 解消。ws メッセージ境界でマーカーが割れても carry で再結合（sync.js）。
+  const syncFeed = cmMakeSyncFilter((b) => term.write(b, scheduleLand));
   ws.onmessage = (ev) => {
-    term.write(new Uint8Array(ev.data), scheduleLand);
+    syncFeed(new Uint8Array(ev.data));
   };
   ws.onclose = () => { $("stat").textContent = "切断"; };
   ws.onerror = () => { $("stat").textContent = "エラー"; };

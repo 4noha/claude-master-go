@@ -328,6 +328,31 @@ func TestRemoteCommandOwnerOnly(t *testing.T) {
 	}
 }
 
+// 同期更新シム（DECSET 2026 ＝ web 側ダブルバッファ）が配信・配線
+// されていることを本番 mux で確認（バイト挙動の決定論検証は
+// `node internal/cloud/web/sync_test.mjs`＝実出荷 sync.js を実行）。
+func TestSyncShimWiredAndServed(t *testing.T) {
+	st := newSt(t, "syncpc")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+	get := func(p string) string {
+		req, _ := http.NewRequest("GET", ts.URL+p, nil)
+		req.Header.Set("Cookie", ck)
+		r, _ := noRedir().Do(req)
+		return bodyStr(r)
+	}
+	if js := get("/static/sync.js"); !strings.Contains(js, "cmMakeSyncFilter") ||
+		!strings.Contains(js, "2026") {
+		t.Fatalf("/static/sync.js が同期シムでない")
+	}
+	if tj := get("/static/term.js"); !strings.Contains(tj, "cmMakeSyncFilter") {
+		t.Fatal("term.js が同期シムを使っていない（ws.onmessage 直 write のまま）")
+	}
+	if h := get("/term?pc=syncpc&sid=s1"); !strings.Contains(h, "/static/sync.js") {
+		t.Fatal("/term HTML が sync.js を読み込んでいない（xterm.js→sync.js→term.js 順）")
+	}
+}
+
 func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	st := newSt(t, "web1")
 	ws, ts := newWeb(t, st, fakeGV{})
