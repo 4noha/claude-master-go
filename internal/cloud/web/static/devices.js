@@ -21,15 +21,24 @@ function el(tag, props, txt) {
 // しない）。stripV で先頭 v を無視して比較（v0.1.3 == 0.1.3）。
 let TARGET = "";
 const stripV = (v) => String(v || "").replace(/^v/, "");
-function verBadge(v) {
-  const sp = el("span", { className: "ver" });
-  if (!v) { sp.textContent = " ?"; sp.title = "版不明"; return sp; }
-  if (!TARGET) { sp.textContent = " " + v; sp.title = "目標版取得不可"; return sp; }
-  const ok = stripV(v) === stripV(TARGET);
-  sp.textContent = ok ? " 🟢" : " 🔴";
-  sp.className = "ver " + (ok ? "vok" : "vbad");
-  sp.title = ok ? v + "（最新）" : v + " → 要更新 " + TARGET;
-  return sp;
+// 更新あり判定: 版・目標版が共に既知で不一致のときのみ true
+//（不明時は false＝誤って赤にしない＝従来の「誤って全🔴」回避方針）。
+function updateAvailable(v) {
+  return !!v && !!TARGET && stripV(v) !== stripV(TARGET);
+}
+// 状態 ●: 更新あり→赤●（idle でも表示＝要更新機を可視）／でなければ
+// 稼働中→緑●（今までどおり）／idle かつ最新→非表示（従来どおり）。
+// 緑は既存 .dot(#22c55e)、赤は既存 .vbad(#ef4444。.dot より後定義で優先)。
+function statusDot(active, v) {
+  if (updateAvailable(v)) {
+    return el("span", { className: "dot vbad",
+      title: v + " → 要更新 " + TARGET }, " ●");
+  }
+  if (active) {
+    return el("span", { className: "dot",
+      title: "稼働中" + (v ? "（" + v + "）" : "") }, " ●");
+  }
+  return null; // idle かつ最新＝従来どおり ● 無し
 }
 
 // 診断: その行の生フィールド（window_name=タイトル等）を開閉表示。
@@ -81,7 +90,8 @@ async function main() {
       const card = el("div", { className: "dev" });
       const head = el("div", { className: "devhead" });
       const h2 = el("h2", null, d.id);
-      h2.appendChild(verBadge(d.cm_version)); // PC(agent) 版
+      // PC(agent): 稼働前提なので active=true 扱い→最新は緑●・更新あり赤●
+      { const sd = statusDot(true, d.cm_version); if (sd) h2.appendChild(sd); }
       head.appendChild(h2);
       const ops = el("span");
       const mkOp = (label, cmd, msg) => {
@@ -142,8 +152,8 @@ async function main() {
           const row = el("div", { className: "s" });
           const dir = x.short_dir || x.key || "session";
           const lbl = el("span", null, dir);
-          if (x.is_active) lbl.appendChild(el("span", { className: "dot" }, " ●"));
-          lbl.appendChild(verBadge(x.cm_version)); // per-proxy 版（旧 inode→🔴）
+          // ● に集約: 稼働中=緑（従来どおり）/ 更新あり=赤 / idle最新=無
+          { const sd = statusDot(x.is_active, x.cm_version); if (sd) lbl.appendChild(sd); }
           row.appendChild(lbl);
           const right = el("span");
           const pre = diagPre(x);

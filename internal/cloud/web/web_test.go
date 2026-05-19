@@ -265,7 +265,7 @@ func TestVersionBadgeAndDiagnostics(t *testing.T) {
 		t.Fatalf("/api/sessions に proxy 版が出ない: %s", s)
 	}
 	js := do("/static/devices.js")
-	for _, want := range []string{"verBadge", "/api/version", "diagPre", "vbad"} {
+	for _, want := range []string{"statusDot", "/api/version", "diagPre", "vbad"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("devices.js に %q が無い（バッジ/診断未配線）", want)
 		}
