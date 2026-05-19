@@ -72,6 +72,44 @@ func TestWebImagePasteFlag(t *testing.T) {
 	}
 }
 
+func TestImgPasteKeyConfig(t *testing.T) {
+	// 未設定＝nil（オプトイン off。既定で誤束縛しない）
+	if k := withConfig(t, "", nil).ImgPasteKey; k != nil {
+		t.Errorf("ImgPasteKey 既定は nil(off) のはず: %#x", k)
+	}
+	// file: ctrl-v → 0x16
+	if k := withConfig(t, "img_paste_key = \"ctrl-v\"\n", nil).ImgPasteKey; len(k) != 1 || k[0] != 0x16 {
+		t.Errorf("file ctrl-v→0x16 にならない: %#x", k)
+	}
+	// env: \x16 表記
+	if k := withConfig(t, "", map[string]string{"IMG_PASTE_KEY": `\x16`}).ImgPasteKey; len(k) != 1 || k[0] != 0x16 {
+		t.Errorf("env \\x16→0x16 にならない: %#x", k)
+	}
+}
+
+func TestParseKeyOrNil(t *testing.T) {
+	cases := []struct {
+		spec string
+		want []byte
+	}{
+		{"", nil},
+		{"   ", nil},
+		{"ctrl-v", []byte{0x16}},
+		{"^v", []byte{0x16}},
+		{`\x16`, []byte{0x16}},
+		{"0x16", []byte{0x16}},
+		{"22", []byte{0x16}},
+		{"v", []byte{'v'}},
+		{"not-a-key", nil}, // 不正は nil（既定キーへ落とさない＝ParseNavKey と差別化）
+	}
+	for _, c := range cases {
+		got := ParseKeyOrNil(c.spec)
+		if string(got) != string(c.want) {
+			t.Errorf("ParseKeyOrNil(%q)=%#x want %#x", c.spec, got, c.want)
+		}
+	}
+}
+
 func TestMalformedFileIgnored(t *testing.T) {
 	c := withConfig(t, "this is = not [[[ valid toml\n", nil)
 	if c.SizePolicy != "client" || c.NavScrollStep != 1 {

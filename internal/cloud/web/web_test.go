@@ -228,6 +228,133 @@ func TestGoogleAuthGate(t *testing.T) {
 	}
 }
 
+// Phase1: 実 Firestore に載った cm_version が /api 経由で出て、
+// /api/version が目標版を返し、devices.js にバッジ/診断ロジックが
+// 入っていることを実 API + 本番同型 mux で確認（合成なし。GitHub は
+// latestTag seam で出さない）。
+func TestVersionBadgeAndDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	st := newSt(t, "verpc")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ws.latestTag = func() (string, error) { return "v9.9.9", nil } // seam
+	ck := authCookie(ws)
+	do := func(path string) string {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		req.Header.Set("Cookie", ck)
+		r, _ := noRedir().Do(req)
+		return bodyStr(r)
+	}
+
+	if err := st.RegisterPCVersion(ctx, "v9.9.9"); err != nil {
+		t.Fatalf("RegisterPCVersion: %v", err)
+	}
+	st.PushStatus(ctx, []map[string]any{
+		{"key": "s1", "session_id": "s1", "short_dir": "d1", "is_active": true,
+			"pid": float64(1), "cwd": "/a", "start_time": "x",
+			"cpu_percent": float64(0), "mem_mb": float64(0),
+			"cm_version": "v0.0.1"}, // 旧 inode 相当（目標と不一致＝🔴）
+	})
+
+	if v := do("/api/version"); !strings.Contains(v, `"target":"v9.9.9"`) {
+		t.Fatalf("/api/version 目標版が想定外: %s", v)
+	}
+	if d := do("/api/devices"); !strings.Contains(d, `"cm_version":"v9.9.9"`) {
+		t.Fatalf("/api/devices に PC 版が出ない: %s", d)
+	}
+	if s := do("/api/sessions?pc=verpc"); !strings.Contains(s, `"cm_version":"v0.0.1"`) {
+		t.Fatalf("/api/sessions に proxy 版が出ない: %s", s)
+	}
+	js := do("/static/devices.js")
+	for _, want := range []string{"verBadge", "/api/version", "diagPre", "vbad"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("devices.js に %q が無い（バッジ/診断未配線）", want)
+		}
+	}
+}
+
+// Phase2: 遠隔命令 API。owner(cookie)のみ POST 可・GET 不可・不正
+// コマンド拒否・未認証 401・監査に requested_by。実 Firestore＋本番
+// mux（合成なし）。
+func TestRemoteCommandOwnerOnly(t *testing.T) {
+	st := newSt(t, "cmdweb")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+	form := func(cmd string) *http.Response {
+		req, _ := http.NewRequest("POST", ts.URL+"/api/command",
+			strings.NewReader("pc=cmdweb&cmd="+cmd))
+		req.Header.Set("Cookie", ck)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r, _ := noRedir().Do(req)
+		return r
+	}
+	// 未認証 POST → 401（apiGuard）
+	r, _ := http.Post(ts.URL+"/api/command", "application/x-www-form-urlencoded",
+		strings.NewReader("pc=cmdweb&cmd=restart-agent"))
+	if r.StatusCode != 401 {
+		t.Fatalf("未認証 /api/command が 401 でない: %d", r.StatusCode)
+	}
+	// GET 不可（破壊的＝POST 限定）
+	greq, _ := http.NewRequest("GET", ts.URL+"/api/command?pc=cmdweb&cmd=restart-agent", nil)
+	greq.Header.Set("Cookie", ck)
+	if g, _ := noRedir().Do(greq); g.StatusCode != 405 {
+		t.Fatalf("GET /api/command が 405 でない: %d", g.StatusCode)
+	}
+	// 不正コマンド → 400
+	if br := form("rm-rf"); br.StatusCode != 400 {
+		t.Fatalf("不正コマンドが 400 でない: %d", br.StatusCode)
+	}
+	// 正常: owner POST → 200 + id
+	ok := form("restart-agent")
+	if ok.StatusCode != 200 || !strings.Contains(bodyStr(ok), `"ok":true`) {
+		t.Fatalf("owner restart-agent 投入が 200/ok でない: %d", ok.StatusCode)
+	}
+	// 監査: requested_by に login email、status pending（agent 未起動）
+	areq, _ := http.NewRequest("GET", ts.URL+"/api/commands?pc=cmdweb", nil)
+	areq.Header.Set("Cookie", ck)
+	ar, _ := noRedir().Do(areq)
+	ab := bodyStr(ar)
+	if !strings.Contains(ab, `"requested_by":"`+allowEmail+`"`) ||
+		!strings.Contains(ab, `"cmd":"restart-agent"`) {
+		t.Fatalf("命令監査が想定外: %s", ab)
+	}
+	// devices.js に投入ロジックがある
+	jq, _ := http.NewRequest("GET", ts.URL+"/static/devices.js", nil)
+	jq.Header.Set("Cookie", ck)
+	jr, _ := noRedir().Do(jq)
+	js := bodyStr(jr)
+	for _, want := range []string{"postCmd", "/api/command", "restart-agent",
+		"self-update", "restart-proxy"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("devices.js に %q が無い（命令 UI 未配線）", want)
+		}
+	}
+}
+
+// 同期更新シム（DECSET 2026 ＝ web 側ダブルバッファ）が配信・配線
+// されていることを本番 mux で確認（バイト挙動の決定論検証は
+// `node internal/cloud/web/sync_test.mjs`＝実出荷 sync.js を実行）。
+func TestSyncShimWiredAndServed(t *testing.T) {
+	st := newSt(t, "syncpc")
+	ws, ts := newWeb(t, st, fakeGV{})
+	ck := authCookie(ws)
+	get := func(p string) string {
+		req, _ := http.NewRequest("GET", ts.URL+p, nil)
+		req.Header.Set("Cookie", ck)
+		r, _ := noRedir().Do(req)
+		return bodyStr(r)
+	}
+	if js := get("/static/sync.js"); !strings.Contains(js, "cmMakeSyncFilter") ||
+		!strings.Contains(js, "2026") {
+		t.Fatalf("/static/sync.js が同期シムでない")
+	}
+	if tj := get("/static/term.js"); !strings.Contains(tj, "cmMakeSyncFilter") {
+		t.Fatal("term.js が同期シムを使っていない（ws.onmessage 直 write のまま）")
+	}
+	if h := get("/term?pc=syncpc&sid=s1"); !strings.Contains(h, "/static/sync.js") {
+		t.Fatal("/term HTML が sync.js を読み込んでいない（xterm.js→sync.js→term.js 順）")
+	}
+}
+
 func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	st := newSt(t, "web1")
 	ws, ts := newWeb(t, st, fakeGV{})
@@ -315,7 +442,7 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/devices.js", "/term?pc="},
 		{"/static/devices.js", "&dir="},       // 一覧→term へ dir 受渡し
 		{"/static/devices.js", "/api/pc/delete"}, // ペアリング削除呼出
-		{"/static/devices.js", "ペアリング削除"},   // 削除ボタン
+		{"/static/devices.js", "\"削除\""},   // 削除ボタン（旧:ペアリング削除）
 	} {
 		if !strings.Contains(bodyStr(do(a.p)), a.want) {
 			t.Fatalf("%s の内容が想定外（%q 無し）", a.p, a.want)

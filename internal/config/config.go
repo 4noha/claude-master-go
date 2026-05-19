@@ -32,7 +32,8 @@ type Config struct {
 	NavPageStep       int
 	PageKeyScroll     bool
 	WheelScroll       bool
-	WebImagePaste     bool // Web からの画像貼付（既定 off・macOS 主対象）
+	WebImagePaste     bool   // Web からの画像貼付（既定 off・macOS 主対象）
+	ImgPasteKey       []byte // tmux/端末からクリップボード画像送出キー。nil=off（既定 off・macOS 主対象）
 	NavWheelStep      int
 	SessionLog        string // "" 無効 / "true" 自動 / パス
 
@@ -153,6 +154,7 @@ func Load() *Config {
 		PageKeyScroll:     boolean("PAGEKEY_SCROLL", false),
 		WheelScroll:       boolean("WHEEL_SCROLL", false),
 		WebImagePaste:     boolean("WEB_IMAGE_PASTE", false),
+		ImgPasteKey:       ParseKeyOrNil(str("IMG_PASTE_KEY", "")),
 		NavWheelStep:      integer("NAV_WHEEL_STEP", 3, 1, 1000),
 		SessionLog:        strings.TrimSpace(str("SESSION_LOG", "")),
 
@@ -242,4 +244,33 @@ func ParseNavKey(spec string) []byte {
 		return []byte{s[0]}
 	}
 	return []byte{0x1c}
+}
+
+// ParseKeyOrNil は ParseNavKey と同一の指定書式を 1 バイトへ解釈するが、
+// 空/未設定/不正は **nil**（＝機能 off）を返す。既定キーへフォールバック
+// する ParseNavKey と違い「未設定なら無効」を表現したいオプトイン用
+// （IMG_PASTE_KEY 等。既定で Ctrl-\ 等を誤束縛しない）。
+func ParseKeyOrNil(spec string) []byte {
+	s := strings.TrimSpace(spec)
+	if s == "" {
+		return nil
+	}
+	low := strings.ToLower(s)
+	if m := navCtrlRe.FindStringSubmatch(low); m != nil {
+		c := strings.ToUpper(m[1])[0]
+		return []byte{c & 0x1f}
+	}
+	if strings.HasPrefix(low, `\x`) || strings.HasPrefix(low, "0x") {
+		if n, err := strconv.ParseInt(low[2:], 16, 32); err == nil {
+			return []byte{byte(n & 0xff)}
+		}
+		return nil
+	}
+	if n, err := strconv.Atoi(low); err == nil {
+		return []byte{byte(n & 0xff)}
+	}
+	if len(s) == 1 {
+		return []byte{s[0]}
+	}
+	return nil
 }

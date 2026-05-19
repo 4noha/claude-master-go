@@ -52,18 +52,24 @@ func (s *Server) maybeWriteStatusLocked() {
 		"updated_at": now.Format("2006-01-02 15:04:05"),
 		"is_active":  active,
 	}
-	// Windows は scanner が他プロセスの cwd を解決できず（PEB 読取要・
-	// M8d best-effort）short_dir が "unknown" になる。proxy は自分の
-	// cwd＝ユーザーが claude を起動した場所を確実に知るので、ここで
-	// status へ載せ monitor.WriteStatus の merge で "unknown" を上書き
-	// させる（Web devices.js は short_dir をセッション名に表示）。unix
-	// は scanner(lsof) が解決済＝載せない＝STATUS_FILE バイト不変
-	// （darwin/linux parity 厳守）。
 	if runtime.GOOS == "windows" {
+		// Windows は scanner が他プロセスの cwd を解決できず（PEB 読取要・
+		// M8d best-effort）short_dir が "unknown" になる。proxy は自分の
+		// cwd＝ユーザーが claude を起動した場所を確実に知るので、ここで
+		// status へ載せ monitor.WriteStatus の merge で "unknown" を上書き
+		// させる（Web devices.js は short_dir をセッション名に表示）。unix
+		// は scanner(lsof) が解決済＝載せない＝STATUS_FILE バイト不変
+		// （darwin/linux parity 厳守）。
 		if wd, e := os.Getwd(); e == nil && wd != "" {
 			payload["cwd"] = wd
 			payload["short_dir"] = filepath.Base(wd)
 		}
+	}
+	if s.cmVersion != "" {
+		// per-proxy バイナリ版。プロセス毎に定数＝Firestore content_hash
+		// は初回1回のみ変化（near-$0 維持）。旧 inode で動く proxy は
+		// 旧版を書く＝web で 🔴（要更新セッション）検出に使う。
+		payload["cm_version"] = s.cmVersion
 	}
 	if found {
 		if hasPct {

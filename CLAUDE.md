@@ -247,6 +247,28 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     `cloud agent` 起動で端末一覧に追加。SA 鍵は env ENROLL_SA_JSON /
     _B64。実 Chrome で「端末を追加」→実 relay 交換→sa.json/toml 配置を
     実環境検証（rev 00006）。実 Mac-Studio が 4 セッションで一覧表示済。
+  - **M8 Web 運用機能 ✅（owner 限定・実 Firestore 検証）**: 運用負荷
+    軽減の遠隔運用 3 本。**Phase1 版可視化**: proxy が自版を
+    `<pid>.status.json` `cm_version` へ→monitor merge→Firestore（プロセス
+    毎定数＝content_hash 初回1回＝near-$0、旧 inode proxy は旧版＝🔴 検出）。
+    `RegisterPCVersion` で PC(agent)版を `pcs/{pc}.cm_version`（idle PC も）。
+    web `/api/version`（最新 Release tag 10分キャッシュ・seam）/`/api/devices`
+    に cm_version、devices.js が 🟢/🔴 バッジ＋診断パネル（window_name=
+    タイトル等）。**Phase2 遠隔命令**: `commands/{pc}/q` チャネル
+    （WatchWake 同系・claim transaction で二重実行防止・Ack 監査・
+    near-$0）。`POST /api/command`（owner cookie＋POST 限定＋allowlist＋
+    requested_by）/`/api/commands`(監査)、devices.js「再起動/更新/履歴」
+    （実行前 confirm）。agent CommandRunner が多層 revocation 再検査→
+    dispatch→Ack（破壊的命令は **Ack 先行**＝kickstart -k 自己 SIGKILL で
+    監査消失回避）。restart-agent=launchctl kickstart -k 両デーモン、
+    self-update=selfupdate.Update→再起動（**手動全機更新ゲートチャ解消**）。
+    **Phase3 restart-proxy**: `agent.ProxyRestarter` が sid→kill→
+    `proxy --resume <uuid>` detached 再起動（**UUID 鍵のみ**＝pid- は不可
+    で web 非表示＋拒否し無関係 kill 防止）。claude --resume 自体は既存
+    resume-burst fixture/display-oracle で担保。実行系(launchctl/kill/
+    spawn/update)は全 seam＝実 Firestore エミュレータ＋fake seam で
+    決定論検証（合成なし）。⚠注意: バイナリ/config はプロセス起動時のみ
+    反映＝self-update/restart 後も対象は再起動で初めて新版。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
@@ -358,7 +380,7 @@ nav-mode/PAGEKEY/WHEEL は「キーが pty まで届く」のが前提。届か�
 | config.py | `internal/config` | ✅ M1。env > ~/.claude-master.toml > 既定。NAV_KEY パーサ移植・実 toml で Python と全項目一致 |
 | pty_scroll.py / pty_emulator.py | `internal/screen` | ✅ M2(山場)。自前 VT モデル（vt10x/x/vt はデータで棄却）＋ history.top ＋ 先頭アンカー ＋ render_viewport。✅ M4c HistoryFlusher/line_to_text/IsLiveResetKey/ClassifyWheel |
 | pty_proxy.py | `internal/ptyproxy` | ✅ M3 creack/pty fork+exec＋unix socket 多重化＋RESIZE/SCROLL。✅ M4b `HandleHostInput`（host nav/pagekey/wheel）＋ M4c `SESSION_LOG` |
-| socket_client.py | `internal/client` | ✅ M5c unix socket + x/term raw・client 側 nav/pagekey/wheel（分類器は M4 共有）・実 socket→Server pan を display-oracle 検証 |
+| socket_client.py | `internal/client` | ✅ M5c unix socket + x/term raw・client 側 nav/pagekey/wheel（分類器は M4 共有）・実 socket→Server pan を display-oracle 検証。✅ クリップボード・ブリッジ（tmux/端末→リモート画像貼付）: `IMG_PASTE_KEY`/toml `img_paste_key`（既定 off・nil）。設定キー押下で macOS のクリップボード画像を osascript で取得し term.js と同一 IMAGE フレーム(`0xff 0xfd|u32 len|u8 code|payload`)を送出＝**サーバ無改変**で `handleImagePaste` 経路を再利用。画像無し時はキーを素通し（Ctrl-V 通常動作維持）。`readClipImage` seam で実 GUI 非汚染テスト。実キーパス e2e（実 socket→実 Server→setClip）＋ manual タグの実クリップボード回帰で検証。**⚠診断（誤診注意）**: 画像不着で claude が「No Image Found」/無反応＝IMAGE フレーム未生成で bare Ctrl-V が通っただけ＝**送出側（その機）に確定**（旧バイナリ／`img_paste_key` 未設定／cloud attach が GUI(Aqua) 外で osascript 不可／更新後セッション未再起動 のいずれか）。根拠: `handleImagePaste` は osascript 成功時のみ 0x16 注入＝届いていれば添付成功し No Image にならない＝**転送路（relay/Cloud Run/agent）は無実**。relay の `coder/websocket` は `NetConn` が netconn.go で `SetReadLimit(-1)` 済＝「relay 32KB 読取制限が原因」は誤診（ここを直すと非バグ破壊）。バイナリ/config はプロセス起動時のみ反映＝update/toml 変更後はその機の cloud attach/tmux を要再起動 |
 | process_scanner.py | `internal/scanner` | ✅ M5a ps/lsof・実環境 5 セッション実検出。**lsof ロケール注意**: launchd は LANG/LC_* 未設定＝C ロケールで lsof が非ASCII cwd を文字列 `\xNN` に化かす（U+2010 ハイフン等を含むパス破損）。`getCwdLsof` は UTF-8 ロケール強制＋`unescapeLsof` の二重防御で実バイト復元 |
 | tmux_manager.py | `internal/tmux` | ✅ M5b 実 tmux 隔離セッション CRUD |
 | monitor.py | `internal/monitor` | ✅ M5d-2 scan 差分→tmux 同期＋start/stop/status＋最小 dashboard。limit_watcher/resume_scheduler は M5e |

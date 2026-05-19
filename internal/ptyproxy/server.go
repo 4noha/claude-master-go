@@ -69,6 +69,7 @@ type Server struct {
 	statusLast  time.Time
 	statusSig   string // 直近 payload の usage+active シグネチャ
 	statusInit  bool   // 初回は必ず書く（Python の None 比較相当）
+	cmVersion   string // この proxy バイナリ版（status.json cm_version）
 	done     chan struct{}
 	doneOnce sync.Once
 	// setClip は画像をこのホストの OS クリップボードへ載せる（差し替え
@@ -110,6 +111,15 @@ func (s *Server) Serve(sockPath string) error {
 
 func (s *Server) Done() <-chan struct{} { return s.done }
 
+// SetClipFunc は画像クリップボード seam を差し替える（テスト/統合での
+// 実クリップボード非汚染・受領検証用。既定は setMacClipboardImage）。
+// 内部の unexported seam をパッケージ跨ぎ実キーパステストへ最小公開。
+func (s *Server) SetClipFunc(fn func(path, ext string) error) {
+	if fn != nil {
+		s.setClip = fn
+	}
+}
+
 // SetHostSize は host 端末サイズを更新し即再描画（SIGWINCH 時）。
 func (s *Server) SetHostSize(cols, rows int) {
 	s.mu.Lock()
@@ -143,6 +153,9 @@ func (s *Server) acceptLoop() {
 			conn: conn, sr: screen.NewScrollRenderer(),
 			cols: 80, rows: 24, // RESIZE 受信まで既定
 		}
+		// client（Web/socket-client）は短内容を下詰め（Web 大グリッドで
+		// 上部張り付き解消）。host=hostSR は呼ばない＝実端末/IME 不変。
+		c.sr.EnableBottomFill()
 		s.mu.Lock()
 		s.clients[c] = struct{}{}
 		s.renderClientLocked(c) // attach catch-up（現 VT を即送る）

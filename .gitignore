@@ -1,12 +1,14 @@
 # build artifacts（配布物は goreleaser/CI で生成、コミットしない）
 /claude-master
+/claude-master.bak.*
 /dist/
 *.test
 *.out
 .DS_Store
 
-# Claude Code のマシンローカル設定（bypassPermissions 等＝共有リポに入れない）
-/.claude/settings.local.json
+# Claude Code 個人用ローカル設定（bypassPermissions 等・コミットしない）
+# 先頭スラッシュ無し＝任意階層で無視（/.claude/... の上位集合）
+.claude/settings.local.json
 
 # Windows ビルド成果物 / PoC スクラッチ
 /claude-master.exe

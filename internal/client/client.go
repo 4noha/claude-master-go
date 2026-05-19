@@ -8,6 +8,7 @@ package client
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -158,65 +159,67 @@ func RunConn(conn net.Conn, cfg *config.Config) error {
 		}
 	}()
 
-	// Python の select(2)（stdin / sock を 1 イベントずつ）を 2 reader
-	// goroutine + unbuffered channel で忠実再現。
-	stdinCh := make(chan []byte)
-	sockCh := make(chan []byte)
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				stdinCh <- append([]byte{}, buf[:n]...)
-			}
-			if err != nil {
-				close(stdinCh)
-				return
-			}
-		}
-	}()
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := conn.Read(buf)
-			if n > 0 {
-				sockCh <- append([]byte{}, buf[:n]...)
-			}
-			if err != nil {
-				close(sockCh)
-				return
-			}
-		}
-	}()
+	return runLoop(os.Stdin, os.Stdout, conn, w, cfg)
+}
+
+// runLoop は RunConn のループ本体（stdin/stdout/conn を引数化＝テスト
+// 可能）。**重要（回帰修正）**: 端末出力 conn→stdout を **独立 goroutine**
+// で汲む。旧実装は単一 select で stdin 処理（processStdin → IMG_PASTE_KEY
+// の readClipImage=osascript 同期実行）と出力を結合しており、クリップ
+// ボード読取の間ループが回らず画面が固まった（"出力でない/文字化け"）。
+// 出力を分離すると stdin/クリップボード遅延が何ms あっても描画は止まら
+// ない。Python の「1 イベントずつ」順序は stdin 処理内では維持（出力は
+// もともと別ストリームで結合不要＝忠実性を損なわない）。connW.write は
+// mutex 直列化済、stdout は本 goroutine 単独 writer で競合なし。
+func runLoop(stdin io.Reader, stdout io.Writer, conn net.Conn,
+	w *connW, cfg *config.Config) error {
 
 	keys := scrollKeys(cfg)
 	navKey := cfg.NavKey
 	navMode := false
 	pkScrolled := false
 
-	for {
-		select {
-		case data, ok := <-stdinCh:
-			if !ok {
-				return nil // stdin EOF（Python: os.read 失敗で return）
+	outDone := make(chan struct{})
+	go func() { // 出力ポンプ（独立・stdin 処理に絶対ブロックされない）
+		defer close(outDone)
+		buf := make([]byte, 4096)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				_, _ = stdout.Write(buf[:n])
 			}
-			done, err := processStdin(w, cfg, keys, navKey, data,
-				&navMode, &pkScrolled)
 			if err != nil {
-				return nil // sock 書き込み失敗（Python: return）
-			}
-			if done {
-				return nil
-			}
-		case data, ok := <-sockCh:
-			if !ok || data == nil {
-				_, _ = os.Stdout.Write([]byte(
+				_, _ = stdout.Write([]byte(
 					"\r\n\x1b[33m--- Claude session ended ---\x1b[0m\r\n"))
-				return nil
+				return
 			}
-			_, _ = os.Stdout.Write(data)
 		}
+	}()
+
+	inDone := make(chan struct{})
+	go func() { // 入力ポンプ（processStdin が osascript 等でブロックして
+		defer close(inDone) // も出力ポンプは無関係に流れ続ける）
+		buf := make([]byte, 1024)
+		for {
+			n, rerr := stdin.Read(buf)
+			if n > 0 {
+				done, werr := processStdin(w, cfg, keys, navKey,
+					append([]byte{}, buf[:n]...), &navMode, &pkScrolled)
+				if werr != nil || done {
+					return // sock 書込失敗 / 通常終了（Python: return）
+				}
+			}
+			if rerr != nil {
+				return // stdin EOF（Python: os.read 失敗で return）
+			}
+		}
+	}()
+
+	select {
+	case <-outDone: // sock 切断＝Claude セッション終了
+	case <-inDone: // stdin EOF / 書込失敗 / done
 	}
+	return nil
 }
 
 // processStdin は stdin 1 読み取りを Python main() のループ本体と同一
@@ -285,6 +288,27 @@ func processStdin(w *connW, cfg *config.Config, keys map[string]int,
 			}
 		}
 		return false, nil
+	}
+	// IMG_PASTE_KEY（既定 off。nil=無効）: ローカル機のクリップボードに
+	// 画像があれば term.js と同一の IMAGE フレームで送出（サーバが remote
+	// クリップボードへ載せ Ctrl+V 注入）。画像が無ければトリガキーを
+	// そのまま claude へ素通し＝Ctrl-V 等の通常動作を壊さない。nav-mode
+	// 中は上で return 済（読書中は無効）。判定は NAV_KEY と同じ
+	// Contains→ReplaceAll パターン。
+	if cfg.ImgPasteKey != nil && bytes.Contains(data, cfg.ImgPasteKey) {
+		if img, code, ok := readClipImage(); ok {
+			if e := w.sendImage(img, code); e != nil {
+				return false, e
+			}
+			rest := bytes.ReplaceAll(data, cfg.ImgPasteKey, nil)
+			if len(rest) > 0 {
+				if e := w.write(rest); e != nil {
+					return false, e
+				}
+			}
+			return false, nil
+		}
+		// 画像無し: 下の通常転送へフォールスルー（data を素通し）
 	}
 	if e := w.write(data); e != nil {
 		return false, e

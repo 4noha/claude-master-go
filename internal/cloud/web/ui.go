@@ -51,6 +51,14 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  .s a{display:inline-block;padding:6px 12px;background:#2563eb;color:#fff;
   border-radius:6px;text-decoration:none;font-size:13px}
  .dot{color:#22c55e}
+ .ver{font-size:11px;color:#9aa;margin-left:6px}
+ .vok{color:#22c55e}
+ .vbad{color:#ef4444}
+ .diag-btn{background:#222;color:#9cf;border:1px solid #345;border-radius:6px;
+  padding:4px 8px;font-size:12px;cursor:pointer;margin-right:8px}
+ .diag{background:#101014;border:1px solid #24242a;border-radius:6px;
+  margin:0 10px 8px;padding:8px 10px;color:#bcd;font-size:11px;
+  white-space:pre-wrap;overflow-x:auto}
  a.logout{margin-left:auto;color:#7ab;font-size:13px}
  #stat{color:#9aa;font-size:13px}
 </style>
@@ -59,7 +67,7 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <a class="logout" href="/auth/logout">ログアウト</a></header>
 <main>
  <p style="color:#9aa;font-size:13px">アカウントに接続されている端末です。
-  セッションの「Web ターミナルを開く」から Web インターフェースに接続します。</p>
+  セッションの「開く」から Web インターフェースに接続します。</p>
  <button id="addbtn" style="padding:8px 14px;font:14px system-ui;
   background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer">
   ＋ 端末を追加</button>
@@ -111,5 +119,6 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 </div>
 <div id="term"><div id="term-host"></div></div>
 <script src="/static/xterm.js"></script>
+<script src="/static/sync.js"></script>
 <script src="/static/term.js"></script>
 </body></html>`
