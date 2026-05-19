@@ -68,6 +68,28 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     `cloud agent` 起動で端末一覧に追加。SA 鍵は env ENROLL_SA_JSON /
     _B64。実 Chrome で「端末を追加」→実 relay 交換→sa.json/toml 配置を
     実環境検証（rev 00006）。実 Mac-Studio が 4 セッションで一覧表示済。
+  - **M8 Web 運用機能 ✅（owner 限定・実 Firestore 検証）**: 運用負荷
+    軽減の遠隔運用 3 本。**Phase1 版可視化**: proxy が自版を
+    `<pid>.status.json` `cm_version` へ→monitor merge→Firestore（プロセス
+    毎定数＝content_hash 初回1回＝near-$0、旧 inode proxy は旧版＝🔴 検出）。
+    `RegisterPCVersion` で PC(agent)版を `pcs/{pc}.cm_version`（idle PC も）。
+    web `/api/version`（最新 Release tag 10分キャッシュ・seam）/`/api/devices`
+    に cm_version、devices.js が 🟢/🔴 バッジ＋診断パネル（window_name=
+    タイトル等）。**Phase2 遠隔命令**: `commands/{pc}/q` チャネル
+    （WatchWake 同系・claim transaction で二重実行防止・Ack 監査・
+    near-$0）。`POST /api/command`（owner cookie＋POST 限定＋allowlist＋
+    requested_by）/`/api/commands`(監査)、devices.js「再起動/更新/履歴」
+    （実行前 confirm）。agent CommandRunner が多層 revocation 再検査→
+    dispatch→Ack（破壊的命令は **Ack 先行**＝kickstart -k 自己 SIGKILL で
+    監査消失回避）。restart-agent=launchctl kickstart -k 両デーモン、
+    self-update=selfupdate.Update→再起動（**手動全機更新ゲートチャ解消**）。
+    **Phase3 restart-proxy**: `agent.ProxyRestarter` が sid→kill→
+    `proxy --resume <uuid>` detached 再起動（**UUID 鍵のみ**＝pid- は不可
+    で web 非表示＋拒否し無関係 kill 防止）。claude --resume 自体は既存
+    resume-burst fixture/display-oracle で担保。実行系(launchctl/kill/
+    spawn/update)は全 seam＝実 Firestore エミュレータ＋fake seam で
+    決定論検証（合成なし）。⚠注意: バイナリ/config はプロセス起動時のみ
+    反映＝self-update/restart 後も対象は再起動で初めて新版。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
