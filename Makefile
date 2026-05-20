@@ -18,12 +18,13 @@ vet:
 # install.sh / selfupdate と一致させること。
 dist:
 	rm -rf dist && mkdir -p dist
-	@for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do \
+	@for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do \
 	  os=$${t%/*}; arch=$${t#*/}; \
+	  ext=""; if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
 	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
 	    go build -trimpath -ldflags '$(LDFLAGS)' \
-	    -o dist/claude-master_$${os}_$${arch} $(PKG) || exit 1; \
-	  echo "built dist/claude-master_$${os}_$${arch}"; \
+	    -o dist/claude-master_$${os}_$${arch}$${ext} $(PKG) || exit 1; \
+	  echo "built dist/claude-master_$${os}_$${arch}$${ext}"; \
 	done
 	cd dist && shasum -a 256 claude-master_* > checksums.txt && cat checksums.txt
 

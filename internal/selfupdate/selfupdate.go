@@ -27,10 +27,16 @@ func repo() string {
 	return Repo
 }
 
-// asset 名は install.sh / goreleaser と一致させること:
-//   claude-master_<goos>_<goarch>
+// asset 名は install.sh / install.ps1 / make dist と一致させること:
+//   claude-master_<goos>_<goarch>[.exe]
+// Windows のみ .exe 拡張子付き（実行可能形式の OS 規約・Makefile dist
+// も windows ターゲットは .exe 付きで出す・checksums.txt も同名）。
 func assetName() string {
-	return fmt.Sprintf("claude-master_%s_%s", runtime.GOOS, runtime.GOARCH)
+	name := fmt.Sprintf("claude-master_%s_%s", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 var httpc = &http.Client{Timeout: 60 * time.Second}
