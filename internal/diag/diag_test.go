@@ -206,6 +206,48 @@ func TestFatalSignalsNonEmpty(t *testing.T) {
 	}
 }
 
+// Cwd フィールド: SetStartCwd で 1 度書いた値が以後の snap に乗る。
+// 起動時 cwd を残すことで、SIGHUP 連鎖で多 proxy 同時死亡した時に
+// dump だけで「どの VSCode タブの claude だったか」を決定論的に特定
+// 可能化する（2026-05-20 の事故で 60874 のタブ特定が不能だった盲点解消）。
+func TestSnapCwdPropagatesFromSetStartCwd(t *testing.T) {
+	// 既定（未設定 or 空）では omitempty で JSON に出ない
+	SetStartCwd("")
+	dir := t.TempDir()
+	p1 := dir + "/empty.snap"
+	if err := WriteSnap(p1, 1, NewCounters(), nil); err != nil {
+		t.Fatal(err)
+	}
+	b1, _ := os.ReadFile(p1)
+	if strings.Contains(string(b1), "\"cwd\":") {
+		t.Fatalf("空 cwd で field 出力（omitempty 失敗）: %s", b1)
+	}
+	// 設定後は snap に必ず出る
+	SetStartCwd("/Users/4noha/works/test-cwd")
+	defer SetStartCwd("") // テスト後始末
+	p2 := dir + "/with-cwd.snap"
+	if err := WriteSnap(p2, 1, NewCounters(), nil); err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := os.ReadFile(p2)
+	var s Snap
+	if err := json.Unmarshal(b2, &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Cwd != "/Users/4noha/works/test-cwd" {
+		t.Fatalf("cwd 不反映: got=%q", s.Cwd)
+	}
+	// Dump にも乗る（troubleshooting 用に snapshot block 内に出る）
+	dpath, err := WriteDump(dir, 1, "test", NewCounters(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump, _ := os.ReadFile(dpath)
+	if !strings.Contains(string(dump), "/Users/4noha/works/test-cwd") {
+		t.Fatalf("dump に cwd 含まれず:\n%s", dump)
+	}
+}
+
 // nil io.Writer 互換: WrapWriter(nil cnt, nil ts) は素通し。
 func TestWrapWriterNilCountersPassthrough(t *testing.T) {
 	var buf bytes.Buffer

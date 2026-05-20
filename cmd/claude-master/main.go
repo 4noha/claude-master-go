@@ -160,6 +160,13 @@ func runProxy(args []string) {
 	snapPath := filepath.Join(diagBase, "diag", fmt.Sprintf("%d.snap", pid))
 	crashDir := filepath.Join(diagBase, "crash")
 	cnt := diag.NewCounters()
+	// 起動時 cwd を 1 度だけ捕捉して diag へ。snap/dump の cwd field
+	// に乗ることで「どの VSCode タブの claude だったか」を terminal.log
+	// 無しに dump だけで決定論的に特定可能（2026-05-20 のクラッシュで
+	// 60874 が特定不能だった盲点を解消）。
+	if wd, e := os.Getwd(); e == nil {
+		diag.SetStartCwd(wd)
+	}
 	diagCtx, diagCancel := context.WithCancel(context.Background())
 	diag.StartPeriodicSnap(diagCtx, 30*time.Second, snapPath, pid, cnt, nil)
 	defer diagCancel()

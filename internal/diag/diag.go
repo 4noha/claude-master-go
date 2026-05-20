@@ -92,13 +92,27 @@ type Snap struct {
 	Client      int64          `json:"client_bytes"`
 	ClientLast  string         `json:"client_last"`
 	ImagePaste  int64          `json:"image_paste_count"`
-	Extras      map[string]any `json:"extras,omitempty"`
+	// Cwd は proxy 起動時の作業ディレクトリ（=どの VSCode タブの claude
+	// だったかを dump/snap だけで決定論的に特定する手掛かり）。空文字は
+	// 取得失敗（OS が deny 等）。runProxy で起動直後に Cwd=os.Getwd() を
+	// 1 度だけ捕捉し package global へ。後で動的に変えない（chdir 無）。
+	Cwd    string         `json:"cwd,omitempty"`
+	Extras map[string]any `json:"extras,omitempty"`
 }
 
 var startTime = time.Now()
 
 // SetStartTime はテストが uptime の初期値を制御するための seam。
 func SetStartTime(t time.Time) { startTime = t }
+
+// startCwd は SetStartCwd で1度だけ書かれる proxy 起動時の作業 dir。
+// snap/dump に「どの VSCode タブの claude だったか」を残す決定論的情報。
+// 走行中 chdir 想定無し（proxy は cwd 不変前提＝そのまま使う）。
+var startCwd string
+
+// SetStartCwd は runProxy が起動直後に 1 度呼ぶ（os.Getwd の値を渡す）。
+// 失敗時は空でも OK（snap の cwd field は omitempty）。テストの seam も兼ねる。
+func SetStartCwd(cwd string) { startCwd = cwd }
 
 func nsToHuman(ns int64) string {
 	if ns <= 0 {
@@ -116,6 +130,7 @@ func snapNow(pid int, c *Counters, extras map[string]any) Snap {
 		UptimeSec:  int64(time.Since(startTime).Seconds()),
 		Goroutines: runtime.NumGoroutine(),
 		HeapAllocB: ms.HeapAlloc, HeapInuseB: ms.HeapInuse, SysB: ms.Sys, NumGC: ms.NumGC,
+		Cwd:    startCwd, // 起動時 cwd（"どの VSCode タブか" 特定の鍵）
 		Extras: extras,
 	}
 	if c != nil {
