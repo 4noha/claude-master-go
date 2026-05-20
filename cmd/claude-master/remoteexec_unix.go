@@ -48,16 +48,18 @@ func killProxy(pid int) error {
 	return nil
 }
 
-// spawnResumeProxy は `claude-master proxy --resume <sid>` を cwd で
-// detached（setsid・stdio=/dev/null）起動。元端末へは戻らないが unix
-// socket を出すので web/cloud 経由で会話を復帰できる。claude --resume
-// の再ストリーム/SESSION_LOG/dedup 不変は ptyproxy 側で既に担保。
-func spawnResumeProxy(sid, cwd string) error {
+// spawnDetachedProxy は `claude-master proxy [args...]` を cwd で
+// detached（setsid・stdio=/dev/null）起動。親と独立に存続するので、
+// 親プロセスが死んでも proxy が残る＝**self-update 反映の前提**
+// （proxy を毎回新規 spawn で立ち上げる）。runStart からの新規セッ
+// ション開始と、ProxyRestarter からの --resume 復帰の両方で使う。
+func spawnDetachedProxy(args []string, cwd string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	c := exec.Command(self, "proxy", "--resume", sid)
+	pArgs := append([]string{"proxy"}, args...)
+	c := exec.Command(self, pArgs...)
 	if cwd != "" {
 		c.Dir = cwd
 	}
@@ -65,10 +67,19 @@ func spawnResumeProxy(sid, cwd string) error {
 	if devnull != nil {
 		c.Stdin, c.Stdout, c.Stderr = devnull, devnull, devnull
 	}
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // agent と独立に存続
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // 親と独立に存続
 	if err := c.Start(); err != nil {
 		return err
 	}
 	_ = c.Process.Release()
 	return nil
+}
+
+// spawnResumeProxy は `claude-master proxy --resume <sid>` を cwd で
+// detached 起動（ProxyRestarter 経由の遠隔復帰用・後方互換シム）。
+// 元端末へは戻らないが unix socket を出すので web/cloud 経由で会話を
+// 復帰できる。claude --resume の再ストリーム/SESSION_LOG/dedup 不変は
+// ptyproxy 側で既に担保。
+func spawnResumeProxy(sid, cwd string) error {
+	return spawnDetachedProxy([]string{"--resume", sid}, cwd)
 }

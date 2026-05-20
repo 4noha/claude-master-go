@@ -46,16 +46,17 @@ func killProxy(pid int) error {
 	return syscall.TerminateProcess(h, 1)
 }
 
-// spawnResumeProxy は `claude-master proxy --resume <sid>` を cwd で
-// detached 起動（DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP＝unix setsid
-// 相当・branch monitor.detachSysProcAttr と同フラグ）。proxy 内部の
-// ConPTY/IPC 経由で web/cloud から会話復帰。
-func spawnResumeProxy(sid, cwd string) error {
+// spawnDetachedProxy は `claude-master proxy [args...]` を cwd で
+// detached（DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP＝unix setsid
+// 相当・branch monitor.detachSysProcAttr と同フラグ）起動。親と独立に
+// 存続＝proxy アップデート反映の前提（毎回新規 spawn で起動）。
+func spawnDetachedProxy(args []string, cwd string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	c := exec.Command(self, "proxy", "--resume", sid)
+	pArgs := append([]string{"proxy"}, args...)
+	c := exec.Command(self, pArgs...)
 	if cwd != "" {
 		c.Dir = cwd
 	}
@@ -71,4 +72,11 @@ func spawnResumeProxy(sid, cwd string) error {
 	}
 	_ = c.Process.Release()
 	return nil
+}
+
+// spawnResumeProxy は `claude-master proxy --resume <sid>` を cwd で
+// detached 起動（ProxyRestarter 経由の遠隔復帰用・後方互換シム）。
+// proxy 内部の ConPTY/IPC 経由で web/cloud から会話復帰。
+func spawnResumeProxy(sid, cwd string) error {
+	return spawnDetachedProxy([]string{"--resume", sid}, cwd)
 }

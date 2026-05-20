@@ -57,6 +57,8 @@ func main() {
 		runSocketClient(os.Args[2:])
 	case "attach":
 		runAttach(os.Args[2:])
+	case "start":
+		runStart(os.Args[2:])
 	case "monitor":
 		runMonitor(os.Args[2:])
 	case "cloud":
@@ -667,5 +669,5 @@ func runCloudAttach(cfg *config.Config, args []string) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master {config|update|version|proxy|socket-client|attach|monitor|cloud}")
+		"usage: claude-master {config|update|version|start|proxy|socket-client|attach|monitor|cloud}")
 }
