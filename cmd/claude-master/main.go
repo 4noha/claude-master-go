@@ -159,6 +159,17 @@ func runProxy(args []string) {
 			os.Exit(128)
 		})
 	}()
+	// 非致命シグナル（SIGUSR1）: **生きたまま** dump を取る経路。proxy
+	// は継続し goroutine 全 stack ＋ counters を crash/ へ残す。「次の
+	// VSCode 巻き込みクラッシュが起こる前に怪しい proxy を予兆検査」で
+	// セッションを殺さず証拠を集める用途。Windows は no-op（signal 非対応）。
+	nonFatalCh := make(chan os.Signal, 4)
+	diag.NotifyNonFatal(nonFatalCh)
+	go func() {
+		for s := range nonFatalCh {
+			_, _ = diag.WriteDump(crashDir, pid, "sig-"+s.String(), cnt, nil)
+		}
+	}()
 
 	hostOut := diag.WrapWriter(os.Stdout, &cnt.HostOutBytes, &cnt.HostOutLastNs)
 
