@@ -106,3 +106,49 @@ func TestWaitKeyForCwdTimeout(t *testing.T) {
 		t.Fatalf("timeout 動作異常: %v", dt)
 	}
 }
+
+// findLiveSessionByCwd は (key, pid) を返す。moved-dir 検出に必須。
+func TestFindLiveSessionReturnsPid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "status.json")
+	write := func(sess []map[string]any) {
+		b, _ := json.Marshal(map[string]any{"sessions": sess})
+		_ = os.WriteFile(path, b, 0o644)
+	}
+	write([]map[string]any{
+		{"cwd": "/X", "key": "k", "pid": float64(12345), "updated_at": "2026-01-01T00:00:00Z"},
+	})
+	key, pid := findLiveSessionByCwd(path, "/X")
+	if key != "k" || pid != 12345 {
+		t.Fatalf("(key,pid) = (%q,%d) want (k,12345)", key, pid)
+	}
+	// 不一致 cwd
+	if k, p := findLiveSessionByCwd(path, "/Y"); k != "" || p != 0 {
+		t.Fatalf("不一致 で (%q,%d)", k, p)
+	}
+}
+
+// readSnapStartCwd: snap.cwd を返す。snap 不在/壊れは空。
+// HOME を t.TempDir() に差し替えて isolated test。
+func TestReadSnapStartCwd(t *testing.T) {
+	td := t.TempDir()
+	t.Setenv("HOME", td)
+	if err := os.MkdirAll(filepath.Join(td, ".claude-master", "diag"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(td, ".claude-master", "diag", "999.snap")
+	_ = os.WriteFile(snap, []byte(`{"pid":999,"cwd":"/old/path","uptime_sec":100}`), 0o644)
+	if got := readSnapStartCwd(999); got != "/old/path" {
+		t.Fatalf("cwd 取得失敗: %q", got)
+	}
+	// snap 不在
+	if got := readSnapStartCwd(888); got != "" {
+		t.Fatalf("不在 で空でない: %q", got)
+	}
+	// 壊れ
+	_ = os.WriteFile(snap, []byte("not json"), 0o644)
+	if got := readSnapStartCwd(999); got != "" {
+		t.Fatalf("壊れ snap で空でない: %q", got)
+	}
+}
+
