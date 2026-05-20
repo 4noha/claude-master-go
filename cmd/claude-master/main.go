@@ -55,6 +55,8 @@ func main() {
 		runProxy(os.Args[2:])
 	case "socket-client":
 		runSocketClient(os.Args[2:])
+	case "attach":
+		runAttach(os.Args[2:])
 	case "monitor":
 		runMonitor(os.Args[2:])
 	case "cloud":
@@ -62,6 +64,26 @@ func main() {
 	default:
 		usage()
 		os.Exit(2)
+	}
+}
+
+// runAttach: claude-master attach <session-key>
+// VSCode 端末等の host 端末から session key 経由で proxy へ接続。proxy
+// が detached restart-proxy で別 PID に再生成されても、STATUS_FILE 再解
+// 決で新 sock へ自動再接続＝**VSCode 端末タブ継続**。proxy 自身は detached
+// spawn 維持なので self-update 反映も壊れない（C 案＝両立解）。
+func runAttach(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr,
+			"usage: claude-master attach <session-key>\n"+
+				"  session-key: UUID（claude --resume の引数）or pid-<N>\n"+
+				"  proxy 死亡時は STATUS_FILE 再解決で自動再接続。session\n"+
+				"  key が STATUS_FILE から 10s 消えると正常終了。")
+		os.Exit(2)
+	}
+	if err := client.RunByKey(args[0], config.Load()); err != nil {
+		fmt.Fprintln(os.Stderr, "attach:", err)
+		os.Exit(1)
 	}
 }
 
@@ -633,5 +655,5 @@ func runCloudAttach(cfg *config.Config, args []string) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master {config|update|version|proxy|socket-client|monitor|cloud}")
+		"usage: claude-master {config|update|version|proxy|socket-client|attach|monitor|cloud}")
 }
