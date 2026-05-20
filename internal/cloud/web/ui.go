@@ -116,7 +116,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
   <button class="nav" id="prev" title="前のコンソール">‹</button>
   <button class="nav" id="next" title="次のコンソール">›</button>
   <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
-  <button class="nav" id="restart" title="このセッションを再起動(--resume 復帰)" style="display:none">再起動</button>
+  <button class="nav" id="restart" title="このセッションを復帰(--resume で別プロセス再起動)" style="display:none">復帰</button>
   <input type="file" accept="image/*" id="imgfile" style="display:none">
   <span id="stat"></span>
  </span>

@@ -175,11 +175,13 @@ async function main() {
             pre.style.display = pre.style.display === "none" ? "block" : "none";
           };
           right.appendChild(diagBtn);
-          // 全セッションに「再起動(復帰)」。pid- は backend が claude の
-          // jsonl から会話 UUID を自動解決して復帰（解決不可は履歴に
-          // エラー＝kill せず保全）。
+          // 全セッションに「復帰」。pid- は backend が claude の jsonl
+          // から会話 UUID を自動解決して復帰（解決不可は履歴にエラー＝
+          // kill せず保全）。devices.js には PC 全体の "再起動"
+          // (restart-agent) が既に居るので、セッション単位の方は
+          // "復帰" で短縮＆衝突回避（claude --resume の和訳ニュアンス）。
           {
-            const rb = el("button", { className: "diag-btn" }, "再起動(復帰)");
+            const rb = el("button", { className: "diag-btn" }, "復帰");
             rb.onclick = async () => {
               if (!confirm(d.id + " / " + dir + "\n現在の claude を終了し " +
                 "--resume で別プロセスとして復帰します。\n" +
