@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/diag"
 	"github.com/4noha/claude-master-go/internal/scanner"
 	"github.com/4noha/claude-master-go/internal/tmux"
 )
@@ -248,6 +249,21 @@ func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 			}
 		}
 		resumeSessions(sch, current, mgr, w)
+		// 閉じ忘れ proxy の自動 GC（C 案＝detached spawn の累積防止）。
+		// host_out_last が IdleGCHours より古い proxy を SIGTERM kill。
+		// 会話 jsonl は残るので再 attach 可。0/未設定 で disable。
+		if cfg.IdleGCHours > 0 {
+			home, _ := os.UserHomeDir()
+			if home != "" {
+				killed := diag.IdleGCSweep(
+					filepath.Join(home, ".claude-master", "diag"),
+					time.Duration(cfg.IdleGCHours)*time.Hour)
+				for _, r := range killed {
+					fmt.Printf("[idle-gc] killed proxy pid=%d cwd=%s last_active=%s ago\n",
+						r.PID, r.Cwd, time.Since(r.HostOutLast).Round(time.Minute))
+				}
+			}
+		}
 		known = current
 		cur := make([]scanner.ClaudeSession, 0, len(known))
 		for _, s := range known {

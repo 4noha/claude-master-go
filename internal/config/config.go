@@ -24,6 +24,10 @@ type Config struct {
 	AutoAttach        bool
 	LimitWarnPct      int
 	LimitInterruptPct int
+	// IdleGCHours: 閉じ忘れ proxy の自動 GC（C 案＝detached spawn の累積
+	// 防止）。host_out_last が N 時間より古い proxy を monitor の RunLoop
+	// で SIGTERM kill。会話 jsonl は残るので再 attach 可能。0 で disable。
+	IdleGCHours int
 
 	SizePolicy        string
 	HostFlowScrollbck bool
@@ -145,6 +149,9 @@ func Load() *Config {
 		AutoAttach:        boolean("AUTO_ATTACH", false),
 		LimitWarnPct:      integer("LIMIT_WARN_PERCENT", 80, 0, 100),
 		LimitInterruptPct: integer("LIMIT_INTERRUPT_PERCENT", 90, 0, 100),
+		// 閉じ忘れ proxy 自動 GC: 既定 4 時間（user 朝開いた tab を夕方
+		// までに掃除）。0 で disable。
+		IdleGCHours: integer("IDLE_GC_HOURS", 4, 0, 168),
 
 		SizePolicy:        strings.ToLower(str("SIZE_POLICY", "client")),
 		HostFlowScrollbck: boolean("HOST_FLOW_SCROLLBACK", false),
