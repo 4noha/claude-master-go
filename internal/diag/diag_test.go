@@ -248,6 +248,44 @@ func TestSnapCwdPropagatesFromSetStartCwd(t *testing.T) {
 	}
 }
 
+// OnClientConnect/Disconnect: ConnectedClients を atomic 増減、0 到達
+// 瞬間に LastDisconnectNs を書く。nil レシーバ safe。
+func TestCountersClientConnectDisconnect(t *testing.T) {
+	c := NewCounters()
+	if got := c.ConnectedClients.Load(); got != 0 {
+		t.Fatalf("初期 ConnectedClients=%d want 0", got)
+	}
+	c.OnClientConnect()
+	if got := c.ConnectedClients.Load(); got != 1 {
+		t.Fatalf("Connect 後 ConnectedClients=%d want 1", got)
+	}
+	if got := c.LastDisconnectNs.Load(); got != 0 {
+		t.Fatalf("Connect 後 LastDisconnectNs=%d want 0（接続中）", got)
+	}
+	c.OnClientConnect()
+	if got := c.ConnectedClients.Load(); got != 2 {
+		t.Fatalf("Connect 2回目 ConnectedClients=%d want 2", got)
+	}
+	c.OnClientDisconnect()
+	if got := c.ConnectedClients.Load(); got != 1 {
+		t.Fatalf("Disconnect 1回目 ConnectedClients=%d want 1", got)
+	}
+	if got := c.LastDisconnectNs.Load(); got != 0 {
+		t.Fatalf("まだ接続中なら LastDisconnectNs=0、got=%d", got)
+	}
+	c.OnClientDisconnect()
+	if got := c.ConnectedClients.Load(); got != 0 {
+		t.Fatalf("Disconnect 2回目 ConnectedClients=%d want 0", got)
+	}
+	if c.LastDisconnectNs.Load() == 0 {
+		t.Fatalf("0 到達瞬間に LastDisconnectNs 書込されない")
+	}
+	// nil safe
+	var nilC *Counters
+	nilC.OnClientConnect()
+	nilC.OnClientDisconnect() // panic しない
+}
+
 // nil io.Writer 互換: WrapWriter(nil cnt, nil ts) は素通し。
 func TestWrapWriterNilCountersPassthrough(t *testing.T) {
 	var buf bytes.Buffer

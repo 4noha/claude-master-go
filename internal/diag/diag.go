@@ -41,6 +41,35 @@ type Counters struct {
 	ClientBytes   atomic.Int64 // socket clients への合算
 	ClientLastNs  atomic.Int64
 	ImagePaste    atomic.Int64 // 画像貼付回数（VSCode 端末への大 ESC ペイロード源）
+	// 接続中 client 数（attach/socket-client/cloud-attach 等）。**真の
+	// 閉じ忘れ判定**用＝observer が居る限り proxy は frame を吐き続け
+	// host_out_last は新しく見えるが、ConnectedClients == 0 が長く続いて
+	// いれば「user が見ていない」確定。IdleGCSweep の正しい指標。
+	ConnectedClients atomic.Int32
+	// 最後に ConnectedClients が 0 になった unix nano。1 以上の時 0
+	// （接続中）。client が 0 になった瞬間に書く。
+	LastDisconnectNs atomic.Int64
+}
+
+// OnClientConnect は client subscribe 時の atomic 更新（server.go から呼
+// ばれる helper）。LastDisconnectNs を 0 にして「現在接続あり」を表現。
+func (c *Counters) OnClientConnect() {
+	if c == nil {
+		return
+	}
+	c.ConnectedClients.Add(1)
+	c.LastDisconnectNs.Store(0)
+}
+
+// OnClientDisconnect は client unsubscribe 時の atomic 更新。新値が 0
+// に到達した瞬間に LastDisconnectNs に now を書く（観測終了の起点）。
+func (c *Counters) OnClientDisconnect() {
+	if c == nil {
+		return
+	}
+	if c.ConnectedClients.Add(-1) <= 0 {
+		c.LastDisconnectNs.Store(time.Now().UnixNano())
+	}
 }
 
 func NewCounters() *Counters { return &Counters{} }
@@ -96,8 +125,13 @@ type Snap struct {
 	// だったかを dump/snap だけで決定論的に特定する手掛かり）。空文字は
 	// 取得失敗（OS が deny 等）。runProxy で起動直後に Cwd=os.Getwd() を
 	// 1 度だけ捕捉し package global へ。後で動的に変えない（chdir 無）。
-	Cwd    string         `json:"cwd,omitempty"`
-	Extras map[string]any `json:"extras,omitempty"`
+	Cwd string `json:"cwd,omitempty"`
+	// ConnectedClients は現時点の attach/socket-client/cloud-attach 接
+	// 続数。LastDisconnect は最後に 0 になった時刻（RFC3339Nano か "never"）
+	// = 「観測者が居ない時間」の起点。IdleGCSweep の真の指標。
+	ConnectedClients int32  `json:"connected_clients"`
+	LastDisconnect   string `json:"last_disconnect"`
+	Extras           map[string]any `json:"extras,omitempty"`
 }
 
 var startTime = time.Now()
@@ -138,6 +172,8 @@ func snapNow(pid int, c *Counters, extras map[string]any) Snap {
 		s.Master, s.MasterLast = c.MasterBytes.Load(), nsToHuman(c.MasterLastNs.Load())
 		s.Client, s.ClientLast = c.ClientBytes.Load(), nsToHuman(c.ClientLastNs.Load())
 		s.ImagePaste = c.ImagePaste.Load()
+		s.ConnectedClients = c.ConnectedClients.Load()
+		s.LastDisconnect = nsToHuman(c.LastDisconnectNs.Load())
 	}
 	return s
 }

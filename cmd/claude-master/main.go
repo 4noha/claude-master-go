@@ -103,6 +103,7 @@ func printConfig() {
 	fmt.Printf("SessionLog        = %q\n", c.SessionLog)
 	fmt.Printf("TmuxSession       = %s\n", c.TmuxSession)
 	fmt.Printf("PollInterval      = %d\n", c.PollInterval)
+	fmt.Printf("IdleGCHours       = %d\n", c.IdleGCHours)
 }
 
 func runUpdate() {
@@ -218,6 +219,7 @@ func runProxy(args []string) {
 		Sigwinch: sig,
 		Version:  version, // status.json の cm_version（per-proxy 版・🟢/🔴 用）
 		Ctx:      proxyCtx,
+		Counters: cnt, // server に注入＝subscribe/unsubscribe で client 数 atomic 更新
 	})
 	stopWinch()
 	if restore != nil {

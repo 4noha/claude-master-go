@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/diag"
 	"github.com/4noha/claude-master-go/internal/screen"
 )
 
@@ -75,7 +76,15 @@ type Server struct {
 	// setClip は画像をこのホストの OS クリップボードへ載せる（差し替え
 	// 可能＝テストで実クリップボードを汚さない seam。既定 macOS impl）。
 	setClip func(path, ext string) error
+	// counters は接続 client 数を atomic に追跡（idle GC の真の指標）。
+	// nil OK（テスト・既存 server_test.go パターン）。SetCounters でセット。
+	counters *diag.Counters
 }
+
+// SetCounters は外から diag.Counters を注入する（runProxy 経由）。nil
+// 渡しで disable。subscribe/unsubscribe 時に OnClientConnect/Disconnect
+// を呼び ConnectedClients/LastDisconnectNs を更新する。
+func (s *Server) SetCounters(c *diag.Counters) { s.counters = c }
 
 func NewServer(p *Proxy, cfg *config.Config, host io.Writer, hostCols, hostRows int) *Server {
 	if cfg == nil {
@@ -155,10 +164,22 @@ func (s *Server) acceptLoop() {
 		}
 		s.mu.Lock()
 		s.clients[c] = struct{}{}
-		s.renderClientLocked(c) // attach catch-up（現 VT を即送る）
+		s.counters.OnClientConnect() // nil-safe
+		s.renderClientLocked(c)      // attach catch-up（現 VT を即送る）
 		s.mu.Unlock()
 		go s.clientReader(c)
 	}
+}
+
+// clientGoneLocked は client unsubscribe の共通経路（要 s.mu）。delete
+// と Counters 更新を一括＝呼び元での増減漏れを防ぐ。conn close は呼び
+// 元責任（既存挙動踏襲）。
+func (s *Server) clientGoneLocked(c *client) {
+	if _, ok := s.clients[c]; !ok {
+		return // 既に削除済み（idempotent）
+	}
+	delete(s.clients, c)
+	s.counters.OnClientDisconnect() // nil-safe
 }
 
 func (s *Server) masterPump() {
@@ -195,15 +216,15 @@ func (s *Server) renderClientLocked(c *client) {
 	_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if _, err := c.conn.Write(frame); err != nil {
 		_ = c.conn.Close()
-		delete(s.clients, c)
+		s.clientGoneLocked(c)
 	}
 }
 
 func (s *Server) dropClient(c *client) {
 	s.mu.Lock()
 	if _, ok := s.clients[c]; ok {
-		delete(s.clients, c)
 		_ = c.conn.Close()
+		s.clientGoneLocked(c)
 	}
 	s.mu.Unlock()
 }

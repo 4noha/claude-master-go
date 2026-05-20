@@ -259,8 +259,8 @@ func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 					filepath.Join(home, ".claude-master", "diag"),
 					time.Duration(cfg.IdleGCHours)*time.Hour)
 				for _, r := range killed {
-					fmt.Printf("[idle-gc] killed proxy pid=%d cwd=%s last_active=%s ago\n",
-						r.PID, r.Cwd, time.Since(r.HostOutLast).Round(time.Minute))
+					fmt.Printf("[idle-gc] killed proxy pid=%d cwd=%s last_disconnect=%s ago\n",
+						r.PID, r.Cwd, time.Since(r.LastDisconnect).Round(time.Minute))
 				}
 			}
 		}

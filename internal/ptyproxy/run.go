@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/diag"
 )
 
 // ProxyOpts は RunProxy の依存注入。subcommand は os.Stdin(raw)/os.Stdout/
@@ -22,6 +23,11 @@ type ProxyOpts struct {
 	WinSize  func() (cols, rows int) // host 端末サイズ（nil=80x24）
 	Sigwinch <-chan os.Signal        // リサイズ通知（nil 可）
 	Version  string                  // claude-master バイナリ版（status.json の cm_version。"" で無効）
+	// Counters は接続 client 数を server.go から atomic に書き込ませる
+	// ため diag.Counters を渡す（nil 可・テスト等）。これにより snap の
+	// connected_clients/last_disconnect が真値で更新され、IdleGCSweep の
+	// 真の閉じ忘れ判定が成立。runProxy 呼出側で生成→注入。
+	Counters *diag.Counters
 	// Ctx は致命シグナル等で外側から **proxy を綺麗に畳む**ための取消。
 	// nil なら従来挙動（無視）。非 nil で Done が来たら PTY master を
 	// 閉じる→子 claude に EOF/HUP→claude 終了→`p.Wait()` 復帰→
@@ -54,6 +60,7 @@ func RunProxy(o ProxyOpts) (int, error) {
 
 	srv := NewServer(p, cfg, o.HostOut, cols, rows)
 	srv.cmVersion = o.Version // status.json の cm_version（per-proxy 版・旧 inode 検出用）
+	srv.SetCounters(o.Counters) // nil-safe; subscribe/unsubscribe で atomic 更新
 
 	sockPath := o.SockPath
 	if sockPath == "" {

@@ -11,18 +11,17 @@ import (
 	"time"
 )
 
-// IdleGCSweep: threshold より古い host_out_last の live PID を SIGTERM。
-// 自プロセス（テスト bin 自身）の snap を「古い last」で書き、kill 経
-// 由で自分を殺すと test runner 全滅するので、テストでは sendSIGTERM
-// は呼ばれない条件（自 PID は alive・last 新しい・PID 不一致など）の
-// 組合せで Sweep ロジックの分岐を網羅する。kill 実発火経路だけは
-// 「巨大未使用 PID で sendSIGTERM を呼ぶ→自然に ESRCH/失敗」で確認。
-func writeSnap(t *testing.T, dir string, pid int, hostOutLast, cwd string) {
+// IdleGCSweep: connected_clients == 0 かつ last_disconnect が threshold
+// より古い live PID を SIGTERM。自プロセスを誤殺しないよう alive+古い
+// 条件を組み合わせる際は connected_clients > 0 でガード（自 PID で
+// kill されると test runner 全滅）。
+func writeSnap(t *testing.T, dir string, pid int, lastDisc string, connected int32, cwd string) {
 	t.Helper()
 	s := map[string]any{
-		"pid":           pid,
-		"host_out_last": hostOutLast,
-		"cwd":           cwd,
+		"pid":               pid,
+		"last_disconnect":   lastDisc,
+		"connected_clients": connected,
+		"cwd":               cwd,
 	}
 	b, _ := json.Marshal(s)
 	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(pid)+".snap"), b, 0o644); err != nil {
@@ -32,7 +31,7 @@ func writeSnap(t *testing.T, dir string, pid int, hostOutLast, cwd string) {
 
 func TestIdleGCSweepZeroThresholdNoop(t *testing.T) {
 	dir := t.TempDir()
-	writeSnap(t, dir, os.Getpid(), "2000-01-01T00:00:00Z", "/x")
+	writeSnap(t, dir, os.Getpid(), "2000-01-01T00:00:00Z", 0, "/x")
 	if r := IdleGCSweep(dir, 0); len(r) != 0 {
 		t.Fatalf("threshold=0 で kill: %+v", r)
 	}
@@ -47,33 +46,43 @@ func TestIdleGCSweepMissingDir(t *testing.T) {
 	}
 }
 
-func TestIdleGCSweepSkipsNeverHostOutLast(t *testing.T) {
+func TestIdleGCSweepSkipsConnected(t *testing.T) {
 	dir := t.TempDir()
 	mine := os.Getpid()
-	writeSnap(t, dir, mine, "never", "/x") // never = 起動直後 = skip
+	// 古い last_disconnect だが connected_clients > 0 ＝ 観測者居る → skip
+	writeSnap(t, dir, mine, "2000-01-01T00:00:00Z", 2, "/x")
 	if r := IdleGCSweep(dir, time.Microsecond); len(r) != 0 {
-		t.Fatalf("never で kill 誤発火: %+v", r)
-	}
-	writeSnap(t, dir, mine, "", "/x") // 空も skip
-	if r := IdleGCSweep(dir, time.Microsecond); len(r) != 0 {
-		t.Fatalf("空 host_out_last で kill 誤発火: %+v", r)
+		t.Fatalf("connected>0 で kill 誤発火: %+v", r)
 	}
 }
 
-func TestIdleGCSweepSkipsRecentActivity(t *testing.T) {
+func TestIdleGCSweepSkipsNeverLastDisconnect(t *testing.T) {
 	dir := t.TempDir()
 	mine := os.Getpid()
-	// 5 秒前 active → threshold 1 時間 → skip
-	writeSnap(t, dir, mine, time.Now().Add(-5*time.Second).Format(time.RFC3339Nano), "/x")
+	writeSnap(t, dir, mine, "never", 0, "/x") // 起動直後で未だ disconnect 経験無し
+	if r := IdleGCSweep(dir, time.Microsecond); len(r) != 0 {
+		t.Fatalf("never で kill 誤発火: %+v", r)
+	}
+	writeSnap(t, dir, mine, "", 0, "/x")
+	if r := IdleGCSweep(dir, time.Microsecond); len(r) != 0 {
+		t.Fatalf("空 last_disconnect で kill 誤発火: %+v", r)
+	}
+}
+
+func TestIdleGCSweepSkipsRecentDisconnect(t *testing.T) {
+	dir := t.TempDir()
+	mine := os.Getpid()
+	// 5 秒前 disconnect → threshold 1 時間 → skip
+	writeSnap(t, dir, mine, time.Now().Add(-5*time.Second).Format(time.RFC3339Nano), 0, "/x")
 	if r := IdleGCSweep(dir, time.Hour); len(r) != 0 {
-		t.Fatalf("active proxy で kill: %+v", r)
+		t.Fatalf("recent disconnect で kill: %+v", r)
 	}
 }
 
 func TestIdleGCSweepSkipsDeadPID(t *testing.T) {
 	dir := t.TempDir()
-	// 不在 PID で「古い last」snap = isAlive=false で skip
-	writeSnap(t, dir, 9999999, time.Now().Add(-2*time.Hour).Format(time.RFC3339Nano), "/x")
+	// 不在 PID で「古い disconnect」snap = isAlive=false で skip
+	writeSnap(t, dir, 9999999, time.Now().Add(-2*time.Hour).Format(time.RFC3339Nano), 0, "/x")
 	if r := IdleGCSweep(dir, time.Hour); len(r) != 0 {
 		t.Fatalf("dead PID で kill 誤発火: %+v", r)
 	}
