@@ -35,18 +35,44 @@ func assetName() string {
 
 var httpc = &http.Client{Timeout: 60 * time.Second}
 
+// UserAgent は GitHub API/Releases へ送る固有 UA。**UA 未指定は GitHub
+// が即 403 で拒否**（規約・実証済）／既定の `Go-http-client/1.1` は IP
+// 共有枠のレート(匿名 60/h)を他ツールと食い合うため固有名で分離する。
+var UserAgent = "claude-master-go"
+
+// setGHHeaders は GitHub API/Releases へ送る共通ヘッダを付ける。
+//
+//   - Accept: 公式推奨の application/vnd.github+json（Releases JSON 強制）。
+//   - User-Agent: 固有名（無 UA = 403／generic Go UA = 他ツールと共有枠）。
+//   - Authorization: GITHUB_TOKEN env があれば Bearer 認証（匿名 60/h →
+//     認証 5000/h で実質枯渇しない）。**運用機械への配備推奨**。
+func setGHHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", UserAgent)
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
+// httpErr は non-200 のとき body 先頭 256B を error に含めて診断容易にする
+// （旧実装は `403 Forbidden` だけで rate limit / UA 拒否 / 権限を区別不能）。
+func httpErr(prefix string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+	return fmt.Errorf("%s: %s (body=%q)", prefix, resp.Status, body)
+}
+
 // LatestTag は GitHub API で最新リリースの tag を返す。
 func LatestTag() (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo())
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	setGHHeaders(req)
 	resp, err := httpc.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("github api: %s", resp.Status)
+		return "", httpErr("github api", resp)
 	}
 	var r struct {
 		TagName string `json:"tag_name"`
@@ -60,14 +86,18 @@ func LatestTag() (string, error) {
 	return r.TagName, nil
 }
 
+// dl はリリース asset を取得。GitHub Releases も同じく UA 必須・
+// 認証で枠拡張。設定が悪い場合の body も error に含む。
 func dl(url string) ([]byte, error) {
-	resp, err := httpc.Get(url)
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	setGHHeaders(req)
+	resp, err := httpc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
+		return nil, httpErr("download "+url, resp)
 	}
 	return io.ReadAll(resp.Body)
 }
