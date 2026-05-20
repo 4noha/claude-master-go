@@ -146,9 +146,13 @@ else {
 if((Test-Path $Exe) -and -not $DryRun){ & $Exe version 2>$null }
 
 # ---- 3. claude シム＋User PATH 前置 ----
-Step "claude シム（proxy カットオーバー）"
+# v0.2.1+: shim は `start` 経由（claude-master start が cwd 解決 → 既存
+# proxy attach or 新規 detached spawn → attach foreground）。proxy 直
+# 起動だと restart-proxy で VSCode タブが死ぬが、start 経由なら同タブ
+# で自動再接続＝C 案完全自動化。
+Step "claude シム（start カットオーバー）"
 $shim = Join-Path $ShimDir 'claude.cmd'
-$shimBody = "@echo off`r`n`"$Exe`" proxy %*`r`n"
+$shimBody = "@echo off`r`n`"$Exe`" start %*`r`n"
 if((Test-Path $shim) -and ((Get-Content $shim -Raw -ErrorAction SilentlyContinue) -eq $shimBody)){
   Say "shim 最新: $shim"
 } else {

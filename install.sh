@@ -66,4 +66,36 @@ case ":$PATH:" in
   *":$bindir:"*) ;;
   *) echo "  ※ PATH に $bindir を追加してください（例: echo 'export PATH=\"$bindir:\$PATH\"' >> ~/.zshrc）" ;;
 esac
+
+# ---- claude シム（alias）の自動設定 ----
+# v0.2.1+: `claude-master start` 経路を C 案完全自動化の前提とする
+# （VSCode タブから見た restart-proxy 透過）。既存の `alias claude=
+# '... proxy ...'` は `start` に置換、どこにも未設定なら新規追加。
+# idempotent（複数回走らせ安全）。
+cm_bin="$bindir/claude-master"
+rc_target=""
+shim_changed=0
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+  [ -f "$rc" ] || continue
+  if grep -q "alias claude=.*claude-master[[:space:]]\\+\\(proxy\\|start\\)" "$rc" 2>/dev/null; then
+    if ! grep -q "alias claude='$cm_bin start'" "$rc" 2>/dev/null; then
+      sed -i.bak "s|alias claude=.*claude-master[[:space:]]\\+\\(proxy\\|start\\).*|alias claude='$cm_bin start'|" "$rc"
+      echo "  shim: $rc を 'alias claude=$cm_bin start' に更新（.bak 退避）"
+      shim_changed=1
+    fi
+    rc_target="$rc"
+  fi
+done
+if [ -z "$rc_target" ]; then
+  rc_target="$HOME/.zshrc"
+  [ -f "$rc_target" ] || rc_target="$HOME/.bashrc"
+  printf "\n# claude-master v0.2.1+: start 経由で C 案 (VSCode タブ自動復帰)\nalias claude='%s start'\n" \
+    "$cm_bin" >> "$rc_target"
+  echo "  shim: $rc_target に alias claude を新規追加"
+  shim_changed=1
+fi
+if [ "$shim_changed" = 1 ]; then
+  echo "  → 既存ターミナルでは 'source $rc_target' or 新規タブで反映"
+fi
+
 echo "更新は同じワンライナー再実行、または: claude-master update"
