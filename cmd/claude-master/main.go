@@ -30,6 +30,7 @@ import (
 	"github.com/4noha/claude-master-go/internal/cloud/relay"
 	"github.com/4noha/claude-master-go/internal/cloud/state"
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/diag"
 	"github.com/4noha/claude-master-go/internal/monitor"
 	"github.com/4noha/claude-master-go/internal/ptyproxy"
 	"github.com/4noha/claude-master-go/internal/selfupdate"
@@ -120,14 +121,56 @@ func runProxy(args []string) {
 	}
 	sig, stopWinch := notifyWinch()
 
+	// 診断（次回クラッシュ採取・cleanup 漏れ根治）。
+	//   ・host stdout を CountingWriter でラップ＝VSCode 端末へ流す
+	//     バイト量と最終書込時刻を atomic 計測（出力洪水仮説の現認用）。
+	//   ・周期 snap（30s）を `<HOME>/.claude-master/diag/<pid>.snap` へ
+	//     原子書出＝SIGKILL/SIGSEGV 等 uncatchable 致命でも直前状態が残る。
+	//   ・SIGHUP/SIGTERM/SIGINT を捕捉し WriteDump→ctx cancel で
+	//     RunProxy を綺麗に畳む（既存 defer の sock/status 削除を走らせる
+	//     ＝VSCode 親死亡時の stale 残骸を根治）。
+	pid := os.Getpid()
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = "."
+	}
+	diagBase := filepath.Join(home, ".claude-master")
+	snapPath := filepath.Join(diagBase, "diag", fmt.Sprintf("%d.snap", pid))
+	crashDir := filepath.Join(diagBase, "crash")
+	cnt := diag.NewCounters()
+	diagCtx, diagCancel := context.WithCancel(context.Background())
+	diag.StartPeriodicSnap(diagCtx, 30*time.Second, snapPath, pid, cnt, nil)
+	defer diagCancel()
+	defer func() { _ = os.Remove(snapPath) }() // 正常終了で snap 残骸防止
+	proxyCtx, proxyCancel := context.WithCancel(context.Background())
+	defer proxyCancel()
+	sigCh := make(chan os.Signal, 4)
+	diag.NotifyFatal(sigCh)
+	go func() {
+		s, ok := <-sigCh
+		if !ok {
+			return
+		}
+		_, _ = diag.WriteDump(crashDir, pid, "signal-"+s.String(), cnt, nil)
+		proxyCancel() // → run.go が p.Close → claude EOF → Wait 復帰 → defer 走る
+		// 5 秒で抜けなければ強制終了（stale 残骸防止のラスト・リゾート）。
+		time.AfterFunc(5*time.Second, func() {
+			_, _ = diag.WriteDump(crashDir, pid, "stuck-after-"+s.String(), cnt, nil)
+			os.Exit(128)
+		})
+	}()
+
+	hostOut := diag.WrapWriter(os.Stdout, &cnt.HostOutBytes, &cnt.HostOutLastNs)
+
 	code, err := ptyproxy.RunProxy(ptyproxy.ProxyOpts{
 		Argv:     append([]string{cfg.RealClaude}, args...),
 		Cfg:      cfg,
 		HostIn:   os.Stdin,
-		HostOut:  os.Stdout,
+		HostOut:  hostOut, // ← VSCode 端末への流量を atomic 計測
 		WinSize:  winSize,
 		Sigwinch: sig,
 		Version:  version, // status.json の cm_version（per-proxy 版・🟢/🔴 用）
+		Ctx:      proxyCtx,
 	})
 	stopWinch()
 	if restore != nil {

@@ -1,6 +1,7 @@
 package ptyproxy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,12 @@ type ProxyOpts struct {
 	WinSize  func() (cols, rows int) // host 端末サイズ（nil=80x24）
 	Sigwinch <-chan os.Signal        // リサイズ通知（nil 可）
 	Version  string                  // claude-master バイナリ版（status.json の cm_version。"" で無効）
+	// Ctx は致命シグナル等で外側から **proxy を綺麗に畳む**ための取消。
+	// nil なら従来挙動（無視）。非 nil で Done が来たら PTY master を
+	// 閉じる→子 claude に EOF/HUP→claude 終了→`p.Wait()` 復帰→
+	// 既存 defer（sock/status クリーンアップ）が走る。VSCode 親死亡
+	// （SIGHUP）の cleanup 漏れ＝stale sock/status の根治路。
+	Ctx context.Context
 }
 
 // RunProxy は claude を PTY ラップして起動し、host stdout + unix socket
@@ -97,6 +104,24 @@ func RunProxy(o ProxyOpts) (int, error) {
 				}
 				_ = p.Setsize(c, r) // 子へ SIGWINCH → claude 再描画
 				srv.SetHostSize(c, r)
+			}
+		}()
+	}
+
+	// 外側 ctx cancel で master を閉じ、claude を綺麗に終了させる経路。
+	// 既存 defer（sock/status クリーンアップ）を確実に走らせるための
+	// soft-kill。重複 Close は p.Close 側で no-op（defer 上の二重 Close OK）。
+	if o.Ctx != nil {
+		go func() {
+			<-o.Ctx.Done()
+			p.Close() // master/tty 閉鎖（HUP 経路）
+			// 子が setsid 等で SIGHUP を確実に受けない実装もあるため
+			// 短い grace 後に強制終了（cross-platform: unix SIGKILL /
+			// windows TerminateProcess）。Pid 既終了は no-op。
+			if pid := p.Pid(); pid > 0 {
+				if proc, err := os.FindProcess(pid); err == nil {
+					_ = proc.Kill()
+				}
 			}
 		}()
 	}

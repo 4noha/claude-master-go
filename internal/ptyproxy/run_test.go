@@ -3,6 +3,7 @@
 package ptyproxy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,12 +67,12 @@ func TestRunProxyHostAndSocketRealRecording(t *testing.T) {
 	codeCh := make(chan int, 1)
 	go func() {
 		code, err := RunProxy(ProxyOpts{
-			Argv:    []string{"/bin/sh", "-c", "cat " + bin + "; sleep 1"},
-			Cfg:     runProxyCfg(),
-			HostIn:  pr,
-			HostOut: host,
+			Argv:     []string{"/bin/sh", "-c", "cat " + bin + "; sleep 1"},
+			Cfg:      runProxyCfg(),
+			HostIn:   pr,
+			HostOut:  host,
 			SockPath: sock,
-			WinSize: func() (int, int) { return 164, 50 },
+			WinSize:  func() (int, int) { return 164, 50 },
 		})
 		if err != nil {
 			t.Errorf("RunProxy err: %v", err)
@@ -141,5 +142,46 @@ func TestRunProxyReturnsChildExitCode(t *testing.T) {
 	}
 	if _, e := os.Stat(sock); e == nil {
 		t.Fatal("終了後も socket が残る")
+	}
+}
+
+// Ctx cancel で長寿命の子も早期終了させ、defer による sock/status の
+// クリーンアップが走ることを実 PTY＋実 unix socket で機械検証。VSCode
+// 親死亡（SIGHUP）で main.go の signal handler が proxyCancel する経路
+// と同一構造（cmd 側は同じ Ctx を渡すだけ）。古い実装（Ctx 未使用）
+// では sleep 5 が走り切るまで待たされる＝このテストはタイムアウトで
+// 落ちる（旧コード fail/新コード pass）。
+func TestRunProxyCtxCancelClosesAndCleansUp(t *testing.T) {
+	sock := tmpSock(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	// 子は sleep 5：通常なら 5 秒待つが、200ms 後の cancel で PTY 閉
+	// →子に HUP→終了→ RunProxy が早期 return（≪5s）。
+	time.AfterFunc(200*time.Millisecond, cancel)
+	done := make(chan struct{})
+	t0 := time.Now()
+	go func() {
+		_, err := RunProxy(ProxyOpts{
+			Argv:     []string{"/bin/sh", "-c", "sleep 5"},
+			Cfg:      runProxyCfg(),
+			HostOut:  &hostBuf{},
+			SockPath: sock,
+			WinSize:  func() (int, int) { return 80, 24 },
+			Ctx:      ctx,
+		})
+		if err != nil {
+			t.Errorf("RunProxy err: %v", err)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Ctx cancel で RunProxy が返らない（旧仕様）")
+	}
+	if dt := time.Since(t0); dt > 2*time.Second {
+		t.Fatalf("早期 close が効いていない: %v 経過（sleep 5 を完走しかけ）", dt)
+	}
+	if _, e := os.Stat(sock); e == nil {
+		t.Fatal("Ctx cancel 後も sock が残る＝defer cleanup が走っていない")
 	}
 }
