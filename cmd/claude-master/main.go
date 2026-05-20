@@ -167,6 +167,11 @@ func runProxy(args []string) {
 	if wd, e := os.Getwd(); e == nil {
 		diag.SetStartCwd(wd)
 	}
+	// 起動時 sweep: VSCode SIGHUP 連鎖や SIGKILL で defer 走らず残った
+	// stale <pid>.{sock,status.json,snap} を一掃（2026-05-20 で 249 件
+	// 累積を観測した現象の根治）。自 PID は alive 判定で必ず除外＝
+	// race-safe（複数 proxy 同時 sweep でも ENOENT 黙殺で harmless）。
+	_, _ = diag.Sweep(cfg.SessionsDir, filepath.Join(diagBase, "diag"))
 	diagCtx, diagCancel := context.WithCancel(context.Background())
 	diag.StartPeriodicSnap(diagCtx, 30*time.Second, snapPath, pid, cnt, nil)
 	defer diagCancel()
