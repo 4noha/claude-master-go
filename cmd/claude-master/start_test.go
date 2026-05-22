@@ -152,3 +152,87 @@ func TestReadSnapStartCwd(t *testing.T) {
 	}
 }
 
+// resolveResumeArgs: args 空 + cwd の jsonl から UUID 解決 → --resume 付与。
+// VSCode crash 後の新タブ `claude` で会話継続できる C 案完全自動化の核心。
+func TestResolveResumeArgsWithExistingJsonl(t *testing.T) {
+	projRoot := t.TempDir()
+	cwd := "/Users/4noha/works/some-proj"
+	// agent.ResolveClaudeUUID は projectsRoot 配下を走査し jsonl 先頭の
+	// cwd field と target を突合せる。サニタイズ規則は逆算不要なので
+	// project dir 名は任意の文字列で OK（先頭 30 レコードまでに cwd が
+	// 出る jsonl があれば一致）。
+	projDir := filepath.Join(projRoot, "-Users-4noha-works-some-proj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	uuid := "83ed0817-bebf-46d4-b28d-5870a8d3a722"
+	jsonl := filepath.Join(projDir, uuid+".jsonl")
+	body := `{"cwd":"` + cwd + `","type":"user","isMeta":true}` + "\n"
+	if err := os.WriteFile(jsonl, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	args, resumed := resolveResumeArgs([]string{}, cwd, projRoot)
+	if resumed != uuid {
+		t.Fatalf("resumed=%q want %q", resumed, uuid)
+	}
+	if len(args) != 2 || args[0] != "--resume" || args[1] != uuid {
+		t.Fatalf("args=%v (want [--resume %s])", args, uuid)
+	}
+}
+
+// resolveResumeArgs: jsonl 不在 → args そのまま (=完全新規セッション)。
+func TestResolveResumeArgsNoJsonl(t *testing.T) {
+	projRoot := t.TempDir()
+	args, resumed := resolveResumeArgs([]string{}, "/no/such/cwd", projRoot)
+	if resumed != "" {
+		t.Fatalf("resumed should be empty: %q", resumed)
+	}
+	if len(args) != 0 {
+		t.Fatalf("args 改変された: %v (want 空)", args)
+	}
+}
+
+// resolveResumeArgs: args 非空（user 明示指定）→ touch せず尊重。
+// 自動 resume と user 明示指定が衝突しない不変条件。
+func TestResolveResumeArgsExistingArgsUntouched(t *testing.T) {
+	projRoot := t.TempDir()
+	// jsonl 配置しても args 非空なら無視されるべき（明示指定優先）
+	input := []string{"--resume", "explicit-uuid"}
+	args, resumed := resolveResumeArgs(input, "/anything", projRoot)
+	if resumed != "" {
+		t.Fatalf("resumed should be empty for non-empty args: %q", resumed)
+	}
+	if len(args) != 2 || args[0] != "--resume" || args[1] != "explicit-uuid" {
+		t.Fatalf("args 改変された: %v", args)
+	}
+}
+
+// resolveResumeArgs: 同 cwd 複数 jsonl は mtime 最新を選ぶ
+// （agent.ResolveClaudeUUID の不変条件・「最古 attach から復帰」を避ける）。
+func TestResolveResumeArgsPicksLatestJsonl(t *testing.T) {
+	projRoot := t.TempDir()
+	cwd := "/Users/4noha/works/multi"
+	projDir := filepath.Join(projRoot, "-Users-4noha-works-multi")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	older := "00000000-1111-1111-1111-000000000000"
+	newer := "ffffffff-eeee-eeee-eeee-ffffffffffff"
+	body := `{"cwd":"` + cwd + `","type":"user"}` + "\n"
+	if err := os.WriteFile(filepath.Join(projDir, older+".jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 1 秒以上 sleep して mtime に差を付ける（Stat の精度は秒以下も
+	// 取れるが、テスト安定化のため明示差）
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(projDir, newer+".jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, resumed := resolveResumeArgs([]string{}, cwd, projRoot)
+	if resumed != newer {
+		t.Fatalf("最新 jsonl が選ばれず: %q (want %q)", resumed, newer)
+	}
+}
+

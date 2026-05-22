@@ -77,8 +77,19 @@ func runStart(args []string) {
 		attachAndExit(key, cfg)
 	}
 
-	// 2. 新規セッション: proxy を detached spawn
-	if err := spawnDetachedProxy(args, cwd); err != nil {
+	// 2. 新規セッション: proxy を detached spawn。
+	//    args 空（= `claude` shim 経由）かつ cwd に既存会話 jsonl があれば
+	//    --resume <uuid> を自動付与＝VSCode crash → 新タブ `claude` で
+	//    **会話継続できる**（これが C 案完全自動化の核心）。args 非空は
+	//    user 明示指定を尊重して touch しない。
+	home, _ := os.UserHomeDir()
+	projectsRoot := filepath.Join(home, ".claude", "projects")
+	spawnArgs, resumedUUID := resolveResumeArgs(args, cwd, projectsRoot)
+	if resumedUUID != "" {
+		fmt.Fprintf(os.Stderr,
+			"claude-master: cwd の既存会話 %s を resume\n", resumedUUID)
+	}
+	if err := spawnDetachedProxy(spawnArgs, cwd); err != nil {
 		fmt.Fprintln(os.Stderr, "start: proxy spawn 失敗:", err)
 		os.Exit(1)
 	}
@@ -103,6 +114,23 @@ func attachAndExit(key string, cfg *config.Config) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// resolveResumeArgs は新規 spawn 時の args を決定する。args 空（= shim
+// 経由の `claude` 単独実行）かつ projectsRoot 配下に cwd と一致する
+// 会話 jsonl が見つかれば `--resume <uuid>` を付与＝**自動 resume**。
+// args 非空（user 明示指定）は touch せず尊重。jsonl 不在は args
+// そのまま（=完全新規セッション）。第2 戻り値は resume した UUID
+// （表示用・空文字は resume せず）。agent.ResolveClaudeUUID 経由で
+// claude 権威 cwd 突合せ＝サニタイズ規則の逆算をしない（不変条件）。
+func resolveResumeArgs(args []string, cwd, projectsRoot string) ([]string, string) {
+	if len(args) != 0 {
+		return args, ""
+	}
+	if uuid, ok := agent.ResolveClaudeUUID(projectsRoot, cwd); ok {
+		return []string{"--resume", uuid}, uuid
+	}
+	return args, ""
 }
 
 // findLiveKeyByCwd は STATUS_FILE の sessions[] から cwd 一致の key を
