@@ -236,3 +236,109 @@ func TestResolveResumeArgsPicksLatestJsonl(t *testing.T) {
 	}
 }
 
+// findLiveSessionsInSubtree: cwd 完全一致は除外、子孫のみ列挙、
+// updated_at 降順でソート。VSCode crash 後の project root から
+// 子 cwd の session を resume する picker の入力源。
+func TestFindLiveSessionsInSubtreeBasic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "status.json")
+	root := "/Users/4noha/works/proj"
+	sessions := []map[string]any{
+		// 完全一致 → 除外されるべき
+		{"cwd": root, "key": "k-exact", "updated_at": "2026-05-23 04:00:00"},
+		// 子孫 (audio-router) → 採用
+		{"cwd": root + "/audio-router", "key": "k-audio", "updated_at": "2026-05-23 05:00:00", "pid": float64(100)},
+		// 孫 (deep nest) → 採用
+		{"cwd": root + "/sub/deep", "key": "k-deep", "updated_at": "2026-05-23 03:00:00", "pid": float64(200)},
+		// 兄弟（root の sibling）→ 除外
+		{"cwd": "/Users/4noha/works/other", "key": "k-sibling", "updated_at": "2026-05-23 06:00:00"},
+		// prefix だけ似てる別 path（"/proj-similar"）→ 除外
+		{"cwd": "/Users/4noha/works/proj-similar", "key": "k-prefix-trap", "updated_at": "2026-05-23 07:00:00"},
+		// 親 → 除外
+		{"cwd": "/Users/4noha/works", "key": "k-parent", "updated_at": "2026-05-23 02:00:00"},
+		// key 空 → 除外（不正データ）
+		{"cwd": root + "/empty-key", "key": "", "updated_at": "2026-05-23 01:00:00"},
+	}
+	b, _ := json.Marshal(map[string]any{"sessions": sessions})
+	_ = os.WriteFile(path, b, 0o644)
+
+	got := findLiveSessionsInSubtree(path, root)
+	if len(got) != 2 {
+		t.Fatalf("件数想定外: %d (want 2)\nresult=%+v", len(got), got)
+	}
+	// updated_at 降順: audio-router(05:00) > deep(03:00)
+	if got[0].Key != "k-audio" {
+		t.Fatalf("先頭 key 想定外: %q (want k-audio)", got[0].Key)
+	}
+	if got[1].Key != "k-deep" {
+		t.Fatalf("2 番目 key 想定外: %q (want k-deep)", got[1].Key)
+	}
+	if got[0].Pid != 100 {
+		t.Fatalf("pid 取得失敗: %d", got[0].Pid)
+	}
+}
+
+// findLiveSessionsInSubtree: 不在/壊れ STATUS_FILE は nil（空）。
+func TestFindLiveSessionsInSubtreeMissingOrBroken(t *testing.T) {
+	if got := findLiveSessionsInSubtree("/no/such/file", "/x"); got != nil {
+		t.Fatalf("不在で nil 期待: %+v", got)
+	}
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken.json")
+	_ = os.WriteFile(broken, []byte("{not json"), 0o644)
+	if got := findLiveSessionsInSubtree(broken, "/x"); got != nil {
+		t.Fatalf("壊れで nil 期待: %+v", got)
+	}
+}
+
+// findLiveSessionsInSubtree: trailing slash 正規化（cwd="/foo/" でも
+// "/foo/bar" を子孫と認識）。
+func TestFindLiveSessionsInSubtreeNormalizesTrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "status.json")
+	sessions := []map[string]any{
+		{"cwd": "/foo/bar", "key": "k1", "updated_at": "2026-01-01"},
+	}
+	b, _ := json.Marshal(map[string]any{"sessions": sessions})
+	_ = os.WriteFile(path, b, 0o644)
+	for _, root := range []string{"/foo", "/foo/", "/foo//"} {
+		got := findLiveSessionsInSubtree(path, root)
+		if len(got) != 1 || got[0].Key != "k1" {
+			t.Fatalf("root=%q で見つからず: %+v", root, got)
+		}
+	}
+}
+
+// pickSubtreeCandidate: 入力 → index の純関数規律
+//
+//	"" (Enter)     → 0 (default = updated_at 最新)
+//	"0"/"n"/"N"   → -1 (新規 spawn)
+//	"1".."count"  → index 数値-1
+//	範囲外/parse 失敗 → -1 (安全側)
+func TestPickSubtreeCandidate(t *testing.T) {
+	cases := []struct {
+		in    string
+		count int
+		want  int
+	}{
+		{"", 3, 0},
+		{"\n", 3, 0}, // trim 後 ""
+		{" ", 3, 0},
+		{"0", 3, -1},
+		{"n", 3, -1},
+		{"N", 3, -1},
+		{"1", 3, 0},
+		{"2", 3, 1},
+		{"3", 3, 2},
+		{"4", 3, -1}, // 範囲外 → 新規
+		{"-1", 3, -1},
+		{"abc", 3, -1}, // parse fail
+		{"  2  ", 3, 1}, // trim
+	}
+	for _, c := range cases {
+		got := pickSubtreeCandidate(c.in, c.count)
+		if got != c.want {
+			t.Fatalf("pickSubtreeCandidate(%q, %d) = %d want %d", c.in, c.count, got, c.want)
+		}
+	}
+}

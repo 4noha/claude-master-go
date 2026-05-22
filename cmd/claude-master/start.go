@@ -20,12 +20,19 @@ package main
 // `claude-master start %*` へ切り替えれば人手復帰不要に。
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/4noha/claude-master-go/internal/client"
 	"github.com/4noha/claude-master-go/internal/cloud/agent"
@@ -77,7 +84,31 @@ func runStart(args []string) {
 		attachAndExit(key, cfg)
 	}
 
-	// 2. 新規セッション: proxy を detached spawn。
+	// 2. cwd 完全一致なし → 子孫 cwd に live session があれば picker で
+	//    user に選ばせる（VSCode terminal が crash で project root に
+	//    cwd リセットされる制約への対策）。args 非空（user 明示指定）は
+	//    新規 spawn を優先＝subtree チェック skip。
+	if len(args) == 0 {
+		subs := findLiveSessionsInSubtree(cfg.StatusFile, cwd)
+		if len(subs) == 1 {
+			fmt.Fprintf(os.Stderr,
+				"claude-master: cwd 配下に live session 1 件 → 自動 attach\n"+
+					"  %s  key=%s\n", subs[0].Cwd, subs[0].Key)
+			attachAndExit(subs[0].Key, cfg)
+		}
+		if len(subs) > 1 {
+			idx := promptSubtreePick(subs, cwd, os.Stdin, os.Stderr)
+			if idx >= 0 {
+				fmt.Fprintf(os.Stderr,
+					"claude-master: %s に attach（key=%s）\n",
+					subs[idx].Cwd, subs[idx].Key)
+				attachAndExit(subs[idx].Key, cfg)
+			}
+			// idx == -1: 新規 spawn 経路へ続行
+		}
+	}
+
+	// 3. 新規セッション: proxy を detached spawn。
 	//    args 空（= `claude` shim 経由）かつ cwd に既存会話 jsonl があれば
 	//    --resume <uuid> を自動付与＝VSCode crash → 新タブ `claude` で
 	//    **会話継続できる**（これが C 案完全自動化の核心）。args 非空は
@@ -176,6 +207,123 @@ func findLiveSessionByCwd(statusFile, cwd string) (string, int) {
 		}
 	}
 	return bestKey, bestPid
+}
+
+// SubtreeCandidate は findLiveSessionsInSubtree が返す候補 1 件の info。
+// VSCode terminal が crash 後にプロジェクトルートへ cwd リセットされる
+// 制約への対策＝user が「子ディレクトリで作業していた session」を root
+// から resume できるようにする。
+type SubtreeCandidate struct {
+	Key       string // session key (UUID or pid-N)
+	Cwd       string // session の実 cwd（root を含む絶対 path）
+	UpdatedAt string // STATUS_FILE の updated_at（並び順用）
+	Pid       int    // proxy or claude pid（display only）
+}
+
+// findLiveSessionsInSubtree は STATUS_FILE から **cwd の子孫** に該当
+// する live session を updated_at 降順で返す。exact match は除外
+// （findLiveSessionByCwd が先に処理する設計）。VSCode crash 後に terminal
+// が project root に戻ってしまった時、root から「どの子 cwd の作業を
+// 復帰しますか？」を user に選ばせる対話 picker の入力源。
+//
+// 判定: filepath.Clean で正規化した上で `cwd + "/"` で始まる path のみ
+// 採用＝「/foo/bar」と「/foo/barr」を取り違えない。
+func findLiveSessionsInSubtree(statusFile, cwd string) []SubtreeCandidate {
+	b, err := os.ReadFile(statusFile)
+	if err != nil {
+		return nil
+	}
+	var p struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if json.Unmarshal(b, &p) != nil {
+		return nil
+	}
+	rootClean := filepath.Clean(cwd)
+	prefix := rootClean
+	if prefix != "/" {
+		prefix = prefix + "/"
+	}
+	out := make([]SubtreeCandidate, 0, len(p.Sessions))
+	for _, s := range p.Sessions {
+		sCwd, _ := s["cwd"].(string)
+		if sCwd == "" {
+			continue
+		}
+		sCwdClean := filepath.Clean(sCwd)
+		if sCwdClean == rootClean {
+			continue // exact match は別経路（findLiveSessionByCwd）
+		}
+		if !strings.HasPrefix(sCwdClean, prefix) {
+			continue
+		}
+		key, _ := s["key"].(string)
+		if key == "" {
+			continue
+		}
+		ts, _ := s["updated_at"].(string)
+		c := SubtreeCandidate{Key: key, Cwd: sCwdClean, UpdatedAt: ts}
+		if pf, ok := s["pid"].(float64); ok {
+			c.Pid = int(pf)
+		}
+		out = append(out, c)
+	}
+	// updated_at 降順（最近活動した順＝user が直近作業していた session）
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out
+}
+
+// pickSubtreeCandidate は picker の純粋ロジック。入力文字列（user の
+// stdin 1 行）と candidates 数から「選ばれた index または -1（=新規 spawn）」
+// を返す。tty 非対話的・empty/parse 失敗時の fallback はここで吸収。
+//
+//   - input == ""（Enter 単独）        → index 0（先頭 = updated_at 最新）
+//   - input == "0" or "n" or "N"       → -1（新規 spawn）
+//   - input == 数値（1..count）         → index 数値-1
+//   - その他                           → 安全側で -1（新規 spawn）
+func pickSubtreeCandidate(input string, count int) int {
+	in := strings.TrimSpace(input)
+	if in == "" {
+		return 0 // default = updated_at 最新
+	}
+	if in == "0" || in == "n" || in == "N" {
+		return -1
+	}
+	n, err := strconv.Atoi(in)
+	if err != nil || n < 1 || n > count {
+		return -1
+	}
+	return n - 1
+}
+
+// promptSubtreePick は candidates を表形式で stderr に表示し、stdin
+// から 1 行受け取って index を返す。tty でない時は -1（=新規 spawn fallback）。
+// reader を seam にしてテスト容易（実呼出は os.Stdin）。
+func promptSubtreePick(cands []SubtreeCandidate, cwd string, in io.Reader, out io.Writer) int {
+	fmt.Fprintf(out,
+		"claude-master: cwd 配下に live session %d 件（cwd=%s）:\n",
+		len(cands), cwd)
+	for i, c := range cands {
+		rel := c.Cwd
+		if strings.HasPrefix(rel, cwd+"/") {
+			rel = strings.TrimPrefix(rel, cwd+"/")
+		}
+		fmt.Fprintf(out, "  %d) %-30s  key=%s  updated=%s\n",
+			i+1, rel, c.Key, c.UpdatedAt)
+	}
+	fmt.Fprintf(out, "  0) [新規セッションを %s で開始]\n", cwd)
+	fmt.Fprintf(out, "番号 [Enter で 1]: ")
+
+	// 非対話的（test / CI / pipe）なら新規 spawn fallback
+	if f, ok := in.(*os.File); ok && !term.IsTerminal(int(f.Fd())) {
+		fmt.Fprintln(out, "  (非対話的＝新規 spawn fallback)")
+		return -1
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && line == "" {
+		return -1
+	}
+	return pickSubtreeCandidate(line, len(cands))
 }
 
 // readSnapStartCwd は diag/<pid>.snap の cwd field（proxy 起動時に
