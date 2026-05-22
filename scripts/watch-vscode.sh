@@ -39,17 +39,29 @@ while true; do
           type = substr(cmd, RSTART+7, RLENGTH-7);
         }
         if (cmd ~ /utility-sub-type=node.mojom.NodeService/) type = "node(ptyhost?)";
-        # type 不明（=--type フラグ無し）の場合は command 末尾 100 文字を
-        # 追記して正体を取れるようにする。CPU 暴走 PID（前回 31498/
-        # 31522 等）の出所追跡用＝末尾には --renderer-client-id=N /
-        # --vscode-window-config=vscode:UUID / --enable-feature=... 等の
-        # 特徴的 flag が並ぶ。CPU 高負荷時に絞らない＝静的プロセスでも
-        # 正体不明を解消（次回 crash 解析時に救う）。
+        # type=- / renderer は正体追跡対象。
+        #   type=-       → command 末尾（main/Helper/Crashpad/ripgrep 等）
+        #   type=renderer → --vscode-window-config=vscode:UUID と
+        #                   --renderer-client-id=N を抽出（V8 OOM 犯人の
+        #                   workspace 逆引き＝5/22-23 の VSCode 連続 crash
+        #                   の真因 = V8 heap 4GB OOM 対策の核心）。
         tail_hint = "";
         if (type == "-") {
           n = length(cmd);
           if (n > 100) tail_hint = " tail=..." substr(cmd, n-96);
           else tail_hint = " tail=" cmd;
+        } else if (type == "renderer") {
+          wcfg = "";
+          rcid = "";
+          if (match(cmd, /--vscode-window-config=vscode:[a-f0-9-]+/)) {
+            wcfg = substr(cmd, RSTART, RLENGTH);
+            sub(/--vscode-window-config=vscode:/, "wcfg=", wcfg);
+          }
+          if (match(cmd, /--renderer-client-id=[0-9]+/)) {
+            rcid = substr(cmd, RSTART, RLENGTH);
+            sub(/--renderer-client-id=/, "rcid=", rcid);
+          }
+          if (wcfg != "" || rcid != "") tail_hint = " " rcid " " wcfg;
         }
         printf "[%s] pid=%-6d rss=%6.1fMB cpu=%5.1f%% type=%-20s name=%s%s\n",
           ts, pid, rss/1024, cpu, type, comm, tail_hint;
