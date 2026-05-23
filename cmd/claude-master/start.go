@@ -88,15 +88,16 @@ func runStart(args []string) {
 	//    user に選ばせる（VSCode terminal が crash で project root に
 	//    cwd リセットされる制約への対策）。args 非空（user 明示指定）は
 	//    新規 spawn を優先＝subtree チェック skip。
+	//
+	//    **必ず picker を出す**（1 件でも勝手に attach しない）＝user は
+	//    「親 dir で新規セッション開始」の意思を picker の "0" で表明可。
+	//    1 件自動 attach は「子の作業中セッションに親から横入りされる」
+	//    挙動になり親 dir での新規開始を阻むため廃止（rule of least
+	//    surprise）。非対話的 (CI/pipe) は promptSubtreePick が -1 を
+	//    返す＝新規 spawn fallback で安全。
 	if len(args) == 0 {
 		subs := findLiveSessionsInSubtree(cfg.StatusFile, cwd)
-		if len(subs) == 1 {
-			fmt.Fprintf(os.Stderr,
-				"claude-master: cwd 配下に live session 1 件 → 自動 attach\n"+
-					"  %s  key=%s\n", subs[0].Cwd, subs[0].Key)
-			attachAndExit(subs[0].Key, cfg)
-		}
-		if len(subs) > 1 {
+		if len(subs) > 0 {
 			idx := promptSubtreePick(subs, cwd, os.Stdin, os.Stderr)
 			if idx >= 0 {
 				fmt.Fprintf(os.Stderr,
@@ -104,7 +105,7 @@ func runStart(args []string) {
 					subs[idx].Cwd, subs[idx].Key)
 				attachAndExit(subs[idx].Key, cfg)
 			}
-			// idx == -1: 新規 spawn 経路へ続行
+			// idx == -1: 新規 spawn 経路へ続行（user の選択 or 非対話的）
 		}
 	}
 
