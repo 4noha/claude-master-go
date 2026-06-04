@@ -78,7 +78,13 @@ func (m *Manager) EnsureSession() {
 func (m *Manager) SetupDashboard(command string) {
 	target := m.Session + ":dashboard"
 	if !ok("select-window", "-t", target) {
-		out("new-window", "-t", m.Session, "-n", "dashboard")
+		// -a: active window の直後に挿入。無いと tmux はオプション無し
+		// new-window の target で current window の index に作ろうとし
+		// "create window failed: index N in use" で**silent fail**する
+		// （out() は .Output() で stderr 無視＝沈黙）。実報告: monitor
+		// restart しても 5 つの欠落窓が復活しなかった真因（base-index=0,
+		// renumber-windows=off の実環境で再現確認）。
+		out("new-window", "-a", "-t", m.Session, "-n", "dashboard")
 	}
 	out("send-keys", "-t", target, command, "Enter")
 }
@@ -113,7 +119,8 @@ func (m *Manager) EnsureCmdWindow(key, base, command string) string {
 		return ex
 	}
 	name := m.uniqueName(base)
-	out("new-window", "-t", m.Session, "-n", name, command)
+	// -a: active window の直後に挿入（SetupDashboard 上のコメント参照）。
+	out("new-window", "-a", "-t", m.Session, "-n", name, command)
 	m.keyToWindow[key] = name
 	return name
 }
@@ -147,7 +154,8 @@ func (m *Manager) NewMarkedWindow(name, command, marker string) string {
 	// @cm_remote へ別設定＝従来とバイト同一・parity）／windows=生成
 	// 時点から marker 符号化名（marker-less な隙間＝reconcile 誤判定＋
 	// legacy-purge 誤殺の真因を消す）。
-	id, nerr := outErr("new-window", "-t", m.Session, "-n",
+	// -a: active window の直後に挿入（SetupDashboard 上のコメント参照）。
+	id, nerr := outErr("new-window", "-a", "-t", m.Session, "-n",
 		initialName(name, marker), "-P", "-F", "#{window_id}", command)
 	if os.Getenv("CM_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "[tmux] new-window id=%q err=%v\n", id, nerr)
@@ -212,7 +220,8 @@ func (m *Manager) AddWindow(s scanner.ClaudeSession, socketPath string) string {
 	} else {
 		cmd = interactiveShell(s.Cwd)
 	}
-	out("new-window", "-t", m.Session, "-n", name, cmd)
+	// -a: active window の直後に挿入（SetupDashboard 上のコメント参照）。
+	out("new-window", "-a", "-t", m.Session, "-n", name, cmd)
 	m.keyToWindow[s.Key()] = name
 	return name
 }
