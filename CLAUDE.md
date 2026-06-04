@@ -443,6 +443,27 @@ resort; GC in old space requested → Reached heap limit`）。
   （`vt.go csi`）ので claude 意図と衝突しない（そもそも proxy frame に
   載っていない＝Web も同症状で `sync.js` 投入の前例あり）。nav scrolled
   -off は hide のまま ESU（cursor 不要・次フレーム live 復帰で自動 show）。
+- **ちらつき防止の層モデル（重要）**: BSU/ESU (`\x1b[?2026h/l`) は
+  「層内アトミック commit」のプロトコル。proxy→tmux→外側端末の **3 層**
+  あると 1 段ごとに sync 宣言が要る（透過に連鎖しない＝tmux は受信した
+  BSU/ESU を消費して自分の redraw に作り直す）。守備は:
+  - **proxy→tmux 区間**: proxy frame の BSU/ESU + 本項目の `?25l/h`。
+    tmux 3.4+ は BSU/ESU を理解して内側 redraw を ESU まで遅延し、
+    `?25l/h` を内側 VT 状態に反映 → tmux 自身の外側 redraw も「cursor
+    不可視で cell 更新→最後に可視」になる。
+  - **tmux→外側端末区間**: tmux は外側 redraw を sync mode で囲むか
+    どうかを **terminfo の Sync capability または `terminal-features`**
+    で判定。標準 `xterm-256color` terminfo に Sync 無し＝裸ストリーム
+    ＝cursor 移動が露出する。対処は `~/.tmux.conf` に
+    `set -as terminal-features ',xterm*:sync'`（VSCode terminal/iTerm2/
+    最近の xterm.js 系はサポート済＝外側端末で atomic 描画）。
+  - host 直接（tmux 非経由）は 1 段なので proxy frame の BSU/ESU だけで
+    完結（=ホストでちらつかない理由）。Web 経路は `cloud/web/static/
+    sync.js` が xterm.js 用 BSU/ESU shim として同じ役を果たす。
+  - 視覚的に「cell 更新は人間に incremental に見えにくいが cursor は
+    overlay で即時追従＝tick より速く 1 frame に複数位置で描かれる」
+    のがちらつき体感の正体。`?25l/h` だけでも cursor は止まる、`,sync`
+    も併用すれば cell も atomic（推奨）。
 - claude --resume は `\x1b[2J` せず絶対座標で会話を再ストリーム→ pyte/VT
   が同内容を複数回スクロールし history が重複。dedup は禁手なので
   ファイル転写（SESSION_LOG）か `SIZE_POLICY=host` 生パススルーで対処。
@@ -464,6 +485,48 @@ resort; GC in old space requested → Reached heap limit`）。
   この差異を `client/largest` で PTY が動く前提で語らないこと
   （Web RESIZE 誤診の温床になった）。実装するなら server.go に
   client サイズ集約＋`p.Setsize` 経路を新設する必要がある。
+
+## tmux 経路の既知制約と運用 trap
+
+tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、host 直接では
+出ない種類の事故が出る。発覚順に集約。
+
+- **`tmux new-window` の silent fail（2026-06-05 解消）**: オプション無し
+  `new-window -t <session>` は active window の index に作ろうとし、衝突
+  すると `create window failed: index N in use` で **exit=1**。`tmux.go`
+  の `out()` は `exec.Command(...).Output()` で stderr を捨てるため、
+  監視ログにも一切痕跡が残らず**沈黙して失敗**する。実害: monitor
+  restart しても外的に kill された窓が再生成されない（known map が key
+  を覚えており AddWindow は呼ぶが new-window が失敗、ループ毎に同じ事を
+  silent に繰り返す）。修正は `internal/tmux/tmux.go` の new-window 全 4
+  箇所（SetupDashboard/EnsureCmdWindow/NewMarkedWindow/AddWindow）に
+  **`-a` を追加**＝active window 直後に挿入させ tmux 自動の index 衝突
+  回避を効かせる。base-index=0 / renumber-windows=off の実環境で再現
+  確認。今後 tmux 系コマンドを足す際は `outErr` で error 拾うか
+  `CM_DEBUG` で stderr を残す方が事故察知が早い。
+- **monitor の `known` map は外的 kill を自己治癒しない（未対処）**:
+  `monitor.go RunLoop` は新規キー時のみ AddWindow し、`known[key]` 既存
+  なら status update のみ。user が `prefix+&` 等で窓を手動 kill しても
+  monitor は known を信じ続け再生成しない。`-a` 修正後は新窓作成自体は
+  成功するので「monitor restart で復帰」は可能になったが、restart 無しの
+  自己治癒は未実装。修正案: RunLoop の current ループで `mgr.WindowFor
+  (key) + ListWindows` 突合せて窓 missing なら再 AddWindow に流す。
+- **nav-mode は silent toggle で UX 罠（未対処）**: NAV_KEY（既定
+  `\x1c`=Ctrl+\、JIS は Karabiner で Ctrl+_ も）押下で `client.go
+  processStdin` が `*navMode = true` にトグル → 黄色 `[NAV MODE ON]` を
+  stdout 出力 → 以降スクロール系以外の全キー握り潰し（`return false,
+  nil`）。claude へは `ReplaceAll(data, navKey, nil)` で剥がれて到達
+  しない＝proxy も無関知。**症状**: 「タイプしても反応ない＝壊れた窓」
+  と user が誤判定し手動 kill → 上記 known バグで再生成されない連鎖。
+  メッセージは出るが claude ストリーミング中だと一瞬で流れ、cursor
+  ちらつき（解消済）で画面ノイズに紛れる。復帰は単純に Ctrl+\ もう
+  一度（トグル）。改善案: nav-mode 中は status-line / window-name に
+  `[NAV]` 表示／tmux pane title などで持続的な視認サイン。
+- **既存 client は terminal-features の再評価をしない**: `tmux show-
+  options -gv terminal-features` を server 単位で更新しても、attach 済
+  client の `client_termfeatures` は attach 時点の解決値を保持。新 sync
+  capability を有効化したいなら detach→再 attach 必要（`tmux detach-
+  client -a` で session/窓無傷、user が再 attach）。
 
 ## 端末キー到達性（Mac JIS / VSCode / Terminal.app）
 
