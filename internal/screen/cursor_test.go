@@ -7,7 +7,8 @@ import (
 )
 
 // 末尾の同期終了直前に出るカーソル復元 CUP を取り出す（無ければ ""）。
-var cupRe = regexp.MustCompile(`\x1b\[(\d+);(\d+)H\x1b\[\?2026l$`)
+// 復元時は `\x1b[r;cH\x1b[?25h\x1b[?2026l` の順（show cursor を伴う）。
+var cupRe = regexp.MustCompile(`\x1b\[(\d+);(\d+)H\x1b\[\?25h\x1b\[\?2026l$`)
 
 func trailingCUP(frame []byte) string {
 	m := cupRe.FindSubmatch(frame)
@@ -46,16 +47,21 @@ func TestRenderANSIRestoresCursorIncludingWideChars(t *testing.T) {
 		t.Fatalf("全角カーソル復元が誤り: got=%q want=3;7（rune 数なら誤 3;4）", got)
 	}
 
-	// フレーム構造（同期囲い・クリア規律）が壊れていないこと。
+	// フレーム構造（同期囲い・クリア規律・cursor hide/show 規律）が
+	// 壊れていないこと。BSU 直後の ?25l は sync 非対応外側端末経由
+	// (例: tmux + VSCode) でフレーム描画中の cursor 散らかりを防ぐ
+	// 必須要素なので不変条件に含める。
 	frame := string(s2.RenderANSI(v2, 5, 20))
-	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[2J\x1b[9999;1H\x1b[H") ||
-		!strings.HasSuffix(frame, "\x1b[?2026l") {
+	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[?25l\x1b[2J\x1b[9999;1H\x1b[H") ||
+		!strings.HasSuffix(frame, "\x1b[?25h\x1b[?2026l") {
 		t.Fatalf("フレーム構造が崩れた: %q", frame)
 	}
 }
 
 // nav 遡り中（カーソル行が viewport 外）は従来どおりカーソル復元を
 // 出さない（読書中で IME 非使用。出すと遡り表示上で誤位置になる）。
+// 加えて cursor も hide のまま ESU を出す（`?25h` を出さない＝読書中の
+// 不要な cursor 表示を抑止。次フレーム live 復帰時に自動で show）。
 func TestRenderANSINoCursorWhenScrolledOffViewport(t *testing.T) {
 	s := NewScrollRenderer()
 	v := NewModel(20, 4)
@@ -73,5 +79,13 @@ func TestRenderANSINoCursorWhenScrolledOffViewport(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(frame), "\x1b[?2026l") {
 		t.Fatalf("同期終了が無い: %q", string(frame))
+	}
+	// nav scrolled-off では `?25h` を出さない（hide のまま）。
+	if strings.Contains(string(frame), "\x1b[?25h") {
+		t.Fatalf("nav scrolled-off で cursor show を出した: %q", string(frame))
+	}
+	// 一方で `?25l`（フレーム冒頭の hide）は必ず出る。
+	if !strings.Contains(string(frame), "\x1b[?25l") {
+		t.Fatalf("フレーム冒頭の cursor hide が無い: %q", string(frame))
 	}
 }

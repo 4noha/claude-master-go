@@ -229,10 +229,21 @@ func (s *ScrollRenderer) ViewCells(hist, vis [][]cell, vrows int) [][]cell {
 // RenderANSI は viewport を同期出力で囲んだ ANSI フレームに（Python
 // render_viewport のバイト構造移植: 先頭 \x1b[?2026h、全消去後カーソルを
 // 画面最下部へ(_CLEAR_SEQ 規律)、行毎 appendRow、末尾 \x1b[?2026l）。
+//
+// フレーム描画中はカーソルを `\x1b[?25l` で隠し、復元できる場合のみ末尾で
+// `\x1b[?25h` で戻す。理由: DECSET 2026（同期出力）が外側端末まで伝搬
+// しない経路では `\x1b[2J\x1b[9999;1H\x1b[H` + 各行描画の間カーソルが
+// 各位置で可視のまま描かれ「カーソルが散ってちらつく」事象になる
+// （tmux 経由 + sync 非対応外側端末で再現。VSCode terminal 等）。VT モデル
+// は DECTCEM (`?25h/l`) をセル非影響として無視する（vt.go csi）ので
+// claude の意図と衝突しない（そもそも proxy frame には載っていない）。
+// nav 遡りでカーソル復元しないケースは hide のまま末尾 ESU を出す
+// （nav 読書中はカーソル不要）。
 func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	rows := s.ViewCells(v.hist, v.buf, vrows)
 	var b strings.Builder
 	b.WriteString("\x1b[?2026h")        // synchronized output begin
+	b.WriteString("\x1b[?25l")          // hide cursor: sync 非対応外側端末でのちらつき防止
 	b.WriteString("\x1b[2J\x1b[9999;1H") // _CLEAR_SEQ: 全消去→最下部
 	b.WriteString("\x1b[H")
 	for i, row := range rows {
@@ -246,7 +257,9 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	// がそこに出て日本語入力が事実上不能になる（半角直接入力は preedit
 	// が無いため露見しにくいが同じ不具合）。cx は draw() が runewidth
 	// で進める表示桁なので全角でも正しい。viewport 外（nav 遡り中）は
-	// 出さない＝従来挙動を維持（読書中で IME 非使用）。
+	// 出さない＝従来挙動を維持（読書中で IME 非使用）。復元できる時のみ
+	// `?25h` で cursor 表示を戻す。nav scrolled-off では hide のまま
+	// ESU を出す（cursor 不要・次フレーム live 復帰時に自動で show）。
 	cur := len(v.hist) + v.cy  // hist+vis 連結での絶対行
 	crow := cur - s.lastOy + 1 // viewport 内 1-based 行
 	ccol := v.cx + 1                 // 表示桁 1-based
@@ -258,6 +271,7 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 			ccol = vcols
 		}
 		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
+		b.WriteString("\x1b[?25h") // show cursor: 復元位置が確定したので戻す
 	}
 	b.WriteString("\x1b[?2026l") // synchronized output end
 	return []byte(b.String())

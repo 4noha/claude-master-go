@@ -433,6 +433,16 @@ resort; GC in old space requested → Reached heap limit`）。
   は `ScrollRenderer.lastOy`、行 = `len(hist)+cy-lastOy+1`。nav 遡りで
   カーソルが viewport 外の時は出さない（読書中・IME 非使用）。回帰検知:
   `internal/screen/cursor_test.go`（半角/全角/遡り外）。
+- **フレーム中の cursor 不可視化（必須）**: `RenderANSI` は BSU 直後に
+  `\x1b[?25l`、cursor 復元できる場合のみ ESU 直前に `\x1b[?25h` を出す。
+  理由: DECSET 2026（同期出力）が tmux→外側端末まで完全伝搬しない経路
+  （tmux 3.6 + VSCode terminal 等。`xterm-256color` terminfo に Sync
+  capability 無し）では `\x1b[2J\x1b[9999;1H\x1b[H` + 各行描画の間
+  カーソルが各位置で可視のまま描かれ「カーソルが散ってちらつく」事象に
+  なる。VT モデルは DECTCEM (`?25h/l`) をセル非影響として無視する
+  （`vt.go csi`）ので claude 意図と衝突しない（そもそも proxy frame に
+  載っていない＝Web も同症状で `sync.js` 投入の前例あり）。nav scrolled
+  -off は hide のまま ESU（cursor 不要・次フレーム live 復帰で自動 show）。
 - claude --resume は `\x1b[2J` せず絶対座標で会話を再ストリーム→ pyte/VT
   が同内容を複数回スクロールし history が重複。dedup は禁手なので
   ファイル転写（SESSION_LOG）か `SIZE_POLICY=host` 生パススルーで対処。
