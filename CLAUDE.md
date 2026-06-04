@@ -294,6 +294,112 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   - HOST_FLOW_SCROLLBACK は実 Claude で構造的に不完全（Python 既知制約）
     のため Go へは未移植（SESSION_LOG で代替＝描画非依存で安全）。
 
+## C 案完全自動化スタック（v0.2.1+・本 PC 稼働中）
+
+VSCode タブが crash/閉じ で死んでも会話を保つ仕組み。**proxy は
+detached spawn 維持**＝親 terminal の SIGHUP 連鎖から独立、attach
+client だけ foreground で走る。**proxy 自身は self-update 反映の
+前提も壊さない**（毎回新規 spawn で立ち上がる）。
+
+- **`claude` shim → `claude-master start [args]`**
+  （`install.sh` で .zshrc/.bashrc に alias を冪等設定。proxy 直起動
+  ではなく start 経由で C 案の自動 attach/復帰経路を必ず通る）。
+  - 1. cwd 完全一致の live session → `attachAndExit` 直行＝即復帰。
+       `findLiveSessionByCwd` は STATUS_FILE (`~/.claude-master.
+       status.json`) を読み updated_at 最新を採用。snap.cwd と現
+       shell cwd が乖離していたら `restartProxyByKey` で新 cwd へ
+       自動 restart-proxy（user が dir 移動した検出）。
+  - 2. cwd 完全一致無し かつ cwd 子孫に live session があれば
+       `findLiveSessionsInSubtree` で候補列挙→**必ず picker を出す**
+       （1 件でも勝手 attach しない＝親 dir での新規開始を阻まない
+       不変条件）。Enter で先頭、"0"/"n" で新規 spawn、数値で指定。
+       非対話的 (CI/pipe) は `term.IsTerminal` で fallback=-1＝新規
+       spawn＝自動化 script から `claude` を呼んでも横入りされない。
+  - 3. 子孫も無し → `resolveResumeArgs` が `agent.ResolveClaudeUUID`
+       (`~/.claude/projects/-<...>/<uuid>.jsonl` の権威 cwd 突合せ＝
+       サニタイズ規則の逆算をしない＝不変条件) で最新 mtime の UUID
+       を解決し `--resume <uuid>` を args に注入→`spawnDetachedProxy`
+       で新規 proxy 起動→STATUS_FILE 登録待ち 30s→attach。args 非空
+       (user 明示指定) は touch せず尊重。
+- **`claude-master sessions [--json]`**: 現存 proxy の cwd 一覧
+  （PID/uptime/host_out/cli/cwd）。`internal/diag.ListSessions` が
+  `~/.claude-master/diag/<pid>.snap` を走査・`isAlive` で死亡 PID
+  除外（Sweep と一貫）。proxy/ps に問合せず負荷ゼロ。
+- **`claude-master attach <key>`**: STATUS_FILE 介さず `<key>.sock`
+  直接接続。STATUS_FILE 不在/壊れ時の救済路。`client.RunByKey`。
+- **idle GC**: `connected_clients == 0 && last_disconnect > IdleGCHours`
+  で proxy に SIGTERM（`internal/diag.IdleGCSweep`、monitor RunLoop
+  から毎 tick）。toml `idle_gc_hours = 4` 既定。v0.2.3 の host_out
+  指標ベース判定が**観測者 broadcast で常時 host_out が動く**ため
+  機能不全だった真因を v0.2.4 で修正＝接続中 client 数指標へ。
+- **dead PID sweep**: runProxy 入口で `internal/diag.Sweep` が
+  `<pid>.sock`/`<pid>.status.json`/`<pid>.snap` のうち PID dead の
+  ものを削除（VSCode SIGHUP 連鎖や SIGKILL では defer 走らず残骸
+  累積する＝2026-05-20 事故では 17 日で 249 件まで肥大）。自分の PID
+  は alive 判定で除外＝race-safe。
+- **proxy SIGUSR1 生検**: proxy を殺さず goroutine snapshot 採取
+  （`internal/diag.NotifyNonFatal`、`~/.claude-master/crash/<pid>-
+  <ts>-sig-user_defined_signal_1.dump`）。stuck proxy 診断で
+  「Accept loop alive？master pump 待ち？」を**生体のまま**確認可能。
+
+## 観測スタック（launchd 化・本 PC 運用）
+
+VSCode crash/terminal SIGHUP 連鎖からの**独立観測**が必要。`~/.claude-
+master/observe/` 配下に 4 系統。
+
+- **launchd plist 4 本**（`~/Library/LaunchAgents/com.4noha.claude-
+  master.watch-*.plist`、`RunAtLoad+KeepAlive`＝kill→数秒で復帰実
+  検証済）:
+  - `watch-host-out` — `python3 scripts/watch-host-out.py` で
+    `<pid>.snap` 1s polling → SUMMARY 60s 周期 / BURST 即時。
+  - `watch-vscode` — `scripts/watch-vscode.sh` で VSCode 関連 ps を
+    30s sampling。**renderer は `wcfg=<window-UUID>` と `rcid=<id>`
+    を併記**＝V8 OOM 犯人 window 逆引き可能（type=- 不明プロセスは
+    command 末尾 100 文字を `tail=` に付与）。
+  - `watch-ips` — `scripts/watch-ips.sh` で `~/Library/Logs/Diagnostic
+    Reports` の新規 .ips/.diag を 30s polling。
+  - `watch-logstream` — `scripts/watch-logstream.sh` (= `exec /usr/
+    bin/log stream --predicate ...`) で kernel/runningboardd の
+    terminated/jetsam/EXC_CRASH を抽出。`exec` で直接子になるので
+    KeepAlive が確実に効く。
+- **plist 4 本は repo 外**（host 個別の絶対 path を含むため）。
+  cloud agent plist と同等の運用＝SA 鍵類同様 git 管理しない。
+- watcher 自身が VSCode crash に巻き込まれる事故あり（2026-05-21
+  朝の 10:11:58 一斉 SIGTERM では host-out watcher も死亡＝2.5h
+  観測穴）→ launchd 化で根治。
+
+## VSCode V8 OOM（本 PC 固有・既知）
+
+Mac-Studio 上の VSCode は `Code main` の **V8 JavaScript heap が 4GB
+到達して定期 crash**（dump annotation `electron.v8-oom.is_heap_oom`、
+`Mark-Compact (reduce) 3811.2 (4001.4) -> 3811.2 (4001.4) MB last
+resort; GC in old space requested → Reached heap limit`）。
+.dmp は `~/Library/Application Support/Code/Crashpad/completed/*.dmp`。
+
+- 主犯特定済（2026-05-23）: **`ms-dotnettools.csharp`** の **Roslyn
+  Language Server**（`Microsoft.CodeAnalysis.LanguageServer`）。
+  `visualstudiotoolsforunity.vstuc` (Unity extension) が **C# Dev
+  Kit と `.NET Install Tool` に依存**しており、4noha-studio-family
+  配下の Unity プロジェクト（4ksplitter_/pan-pan 等の .sln/.csproj）
+  を VSCode が自動検出して activate→Roslyn が 700MB+ 占有→main の
+  IPC partner として線形リーク。**Disable では止まらない**（extension
+  host 内部の watchdog が Roslyn を即再 spawn する。kill しても
+  --pipe を新調して復活）。
+- 対策: **uninstall + dir を `.bak` rename + VSCode を Cmd+Q 完全
+  終了** が必須。再起動で「メモリ上に load 済みの extension code」
+  も含めて消える。Unity extension は marketplace から外れる名前
+  （`visualstudiotoolsforunity.vstuc` は code CLI 経由の uninstall
+  が "not installed" で拒否される）＝ .bak rename + Cmd+Q で実質
+  無効化。
+- 改善実測: 主犯対策前 **1-2h/回 crash** → 対策後 **5-7h/回**（≒
+  9 倍）。ただし残り +6MB/分 の trigger は別途あり：
+  - Round 1 (5/24): `saoudrizwan.claude-dev` (Cline) uninstall → 効果
+    なし（5/24-29 の crash 頻度ほぼ同じ）＝**Cline は無関係**。
+  - 残候補（未検証）: Pylance (ms-python.vscode-pylance) の大規模
+    monorepo 解析、もしくは Settings Sync 経由で再生する extension。
+- C 案 + UUID resume picker で **crash しても会話は jsonl から復帰
+  可能**＝運用上「日に 1 回 VSCode 再起動」で許容できる水準。
+
 ## 開発の鉄則（Python 版で何度も破って学んだ）
 
 1. **推測修正をしない。** 「動かない」報告はまず原因を実再現してから直す。
@@ -387,6 +493,12 @@ nav-mode/PAGEKEY/WHEEL は「キーが pty まで届く」のが前提。届か�
 | pty_proxy.py main/run/_loop | `internal/ptyproxy` (RunProxy) | ✅ M5d-1 実行可能 proxy＝claude-wrap 置換（cutover 中核）。使用量 status は M5e |
 | debug/ replay+display-oracle | `test/` + 流用 fixtures | 全 M で実録画回帰 |
 | （新規）クラウド同期 | `internal/sync` 等 | M6。FCM wake + Cloud Run WSS + Firestore（DESIGN.md）|
+| （新規）C 案完全自動化 | `cmd/.../start.go` + `internal/client.RunByKey` + `internal/cloud/agent.{ProxyRestarter,ResolveClaudeUUID}` | ✅ v0.2.1+。`claude` shim 経由で start→cwd 一致 attach / cwd 子孫 picker（1 件でも必ず picker＝親 dir 新規開始を阻まない）／ jsonl 最新 UUID 自動解決→`--resume` 注入で完全自動会話継続 |
+| （新規）sessions サブコマンド | `internal/diag.ListSessions` + `cmd/.../sessions.go` | ✅ v0.2.6。`<pid>.snap` 走査で現存 proxy 一覧（PID/uptime/host_out/cli/cwd）。proxy/ps 非問合せ＝負荷ゼロ |
+| （新規）idle GC | `internal/diag.IdleGCSweep` + `monitor.RunLoop` | ✅ v0.2.4。connected_clients==0 + last_disconnect > IdleGCHours で proxy SIGTERM（v0.2.3 の host_out 指標は observer broadcast で動き続け機能不全＝指標を真に切替） |
+| （新規）SIGUSR1 生検 | `internal/diag.NotifyNonFatal` | ✅ 殺さず goroutine snapshot 採取＝stuck proxy 診断（Accept loop alive？master pump 待ち？を生体で判定可） |
+| （新規）dead PID sweep | `internal/diag.Sweep` | ✅ proxy 起動時に dead PID の sock/status/snap を削除（VSCode SIGHUP 連鎖や SIGKILL の defer 走らず残骸累積を根治） |
+| （新規）観測 watcher launchd 4 系統 | `scripts/watch-{host-out.py,vscode.sh,ips.sh,logstream.sh}` + 4 plist | ✅ 2026-05-23。VSCode crash 連鎖から独立。renderer args 含む V8 OOM 犯人 window 逆引き対応 |
 
 `internal/selfupdate` + `claude-master update`、`install.sh`、
 `.goreleaser.yaml`、`Makefile` は実装済（配布: 完全静的・CGO 不要・
