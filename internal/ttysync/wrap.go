@@ -22,9 +22,24 @@
 package ttysync
 
 import (
+	"fmt"
 	"io"
+	"os"
 	"time"
 )
+
+// getDebug は env CM_TTYSYNC_DEBUG=1 の時に flush 毎の size を stderr へ
+// 1 行で出す関数を返す (それ以外 nil)。本機能の効果を実測確認するため。
+func getDebug() func(int) {
+	if os.Getenv("CM_TTYSYNC_DEBUG") == "" {
+		return nil
+	}
+	start := time.Now()
+	return func(n int) {
+		fmt.Fprintf(os.Stderr, "[ttysync] +%.1fms flush %d\n",
+			float64(time.Since(start).Microseconds())/1000.0, n)
+	}
+}
 
 // PumpWithIdle は src から読み続けて dst へ flush するが、bytes 到着で
 // idle タイマーを (再) 起動し、idle 期間無入力で buffer を 1 write に
@@ -62,10 +77,14 @@ func PumpWithIdle(dst io.Writer, src io.Reader, idle time.Duration,
 	var buf []byte
 	var timer Timer
 	var timerC <-chan time.Time
+	dbg := getDebug()
 
 	flush := func() error {
 		if len(buf) == 0 {
 			return nil
+		}
+		if dbg != nil {
+			dbg(len(buf))
 		}
 		_, err := dst.Write(buf)
 		buf = buf[:0]
