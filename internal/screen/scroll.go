@@ -276,3 +276,50 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	b.WriteString("\x1b[?2026l") // synchronized output end
 	return []byte(b.String())
 }
+
+// RenderANSIIncremental は RenderANSI と同じ frame 形だが **\x1b[2J 全
+// 消去を出さない**。outer 端末が既に前回 frame 状態を保持している前提
+// (= 初回は RenderANSI、2 回目以降に本関数を使う) で blackout flash を
+// 物理的に発生させない。
+//
+// 必要性: 外側端末が DECSET 2026 を honor しない経路 (xterm.js / Mac
+// Terminal.app 等) では、frame 内 `\x1b[2J` が即時実行され画面が一瞬
+// 真っ黒→再描画＝毎 frame blackout が visible (CLAUDE.md「tmux 経路
+// ちらつき残課題」L4-A' 実機検証で再発確認した真因)。
+//
+// 不変条件:
+//   - 全 cell が毎回上書き emit される (appendRow が vcols ぶん必ず書く)
+//     ので、2J 省略しても古い frame の cell は新 cell で覆われる
+//   - viewport size 不変前提 (resize 時は呼び元が RenderANSI で再 init)
+//   - 行数が同じ＝古い行が露出しない
+//   - 初回 attach や outer に異物 (shell prompt 等) がある場合は呼び元
+//     が初回 RenderANSI で clean 状態を作ってから本関数に切替えること
+func (s *ScrollRenderer) RenderANSIIncremental(v *VT, vrows, vcols int) []byte {
+	rows := s.ViewCells(v.hist, v.buf, vrows)
+	var b strings.Builder
+	b.WriteString("\x1b[?2026h") // synchronized output begin
+	b.WriteString("\x1b[?25l")   // hide cursor (sync 非対応端末対策・RenderANSI と同様)
+	b.WriteString("\x1b[H")      // cursor home (2J 無し＝既存 cell を残す)
+	for i, row := range rows {
+		appendRow(&b, row, vcols)
+		if i+1 < len(rows) {
+			b.WriteString("\r\n")
+		}
+	}
+	// カーソル復元 (RenderANSI と同一ロジック)
+	cur := len(v.hist) + v.cy
+	crow := cur - s.lastOy + 1
+	ccol := v.cx + 1
+	if crow >= 1 && crow <= vrows {
+		if ccol < 1 {
+			ccol = 1
+		}
+		if ccol > vcols {
+			ccol = vcols
+		}
+		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
+		b.WriteString("\x1b[?25h")
+	}
+	b.WriteString("\x1b[?2026l")
+	return []byte(b.String())
+}

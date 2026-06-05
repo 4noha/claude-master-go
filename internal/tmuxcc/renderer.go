@@ -40,6 +40,12 @@ type Renderer struct {
 type paneState struct {
 	vt *screen.VT
 	sr *screen.ScrollRenderer
+	// initialEmitted: 初回 emit (= 2J 入り RenderANSI) 済か。これが
+	// false の間は full redraw で outer を clean state にする。以降は
+	// RenderANSIIncremental (2J 無し・既存 cell 上書き) で blackout
+	// flash を回避。SetSize / SetActive (pane 切替) で false に戻し
+	// 再 full emit する。
+	initialEmitted bool
 }
 
 // NewRenderer は指定サイズ・出力先で Renderer を作る。
@@ -55,12 +61,12 @@ func NewRenderer(out io.Writer, cols, rows int) *Renderer {
 }
 
 // SetSize は描画サイズを変更。既存 pane VT は再生成 (resize 時)。
+// initialEmitted も false にリセット＝resize 後の最初の emit は 2J
+// 付き full redraw で outer を clean にする。
 func (r *Renderer) SetSize(cols, rows int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cols, r.rows = cols, rows
-	// 既存 VT を捨てて新サイズで作り直し。次の %output で再 Feed される
-	// (catch-up frame が proxy から来る前提)。
 	for id := range r.panes {
 		r.panes[id] = newPaneState(cols, rows)
 	}
@@ -88,7 +94,9 @@ func (r *Renderer) HandleOutput(paneID string, data []byte) {
 	}
 }
 
-// SetActive は表示する pane を切替え、即 full-redraw。
+// SetActive は表示する pane を切替え、即 full-redraw (2J 付き)。新
+// pane の content は元の pane と無関係なので initialEmitted を false に
+// 戻して clean redraw する。
 func (r *Renderer) SetActive(paneID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,6 +104,8 @@ func (r *Renderer) SetActive(paneID string) {
 		r.panes[paneID] = newPaneState(r.cols, r.rows)
 	}
 	r.active = paneID
+	// 新 active pane の初回 emit は full redraw で outer を clean に
+	r.panes[paneID].initialEmitted = false
 	r.emitActiveLocked()
 }
 
@@ -128,17 +138,28 @@ func (r *Renderer) RemovePane(paneID string) {
 	}
 }
 
-// emitActiveLocked は active pane VT を screen.RenderANSI で 1 回の
-// Write に集約して out に書く。要 r.mu。
+// emitActiveLocked は active pane VT を 1 回の Write で out に書く。
+// 初回は RenderANSI (2J 込み full) で outer を clean state にし、以降
+// は RenderANSIIncremental (2J 無し・既存 cell 上書き) で毎 frame の
+// blackout flash を物理的に発生させない。要 r.mu。
+//
+// blackout 抑止の意味: 外側端末が DECSET 2026 を honor しない経路
+// (xterm.js / Mac Terminal.app 等) では \x1b[2J を即時実行→画面真っ黒
+// →再描画＝frame ごとに blackout が visible。L4-A' tmux-render 初版で
+// この毎 frame 2J を打ってしまい「普通に全画面ちらつく」状況を再現した
+// (実機検証で確定)。incremental 切替でこれが構造的に消える。
 func (r *Renderer) emitActiveLocked() {
 	ps, ok := r.panes[r.active]
 	if !ok || r.out == nil {
 		return
 	}
-	frame := ps.sr.RenderANSI(ps.vt, r.rows, r.cols)
-	// 1 syscall に集約された atomic write。outer 端末は BSU/ESU を
-	// 解する限り完全 atomic 描画 (screen.RenderANSI が ?2026h/l + ?25l/h
-	// を frame 末尾の cursor 復元と共に出している＝既存実装の incl)。
+	var frame []byte
+	if !ps.initialEmitted {
+		frame = ps.sr.RenderANSI(ps.vt, r.rows, r.cols)
+		ps.initialEmitted = true
+	} else {
+		frame = ps.sr.RenderANSIIncremental(ps.vt, r.rows, r.cols)
+	}
 	_, _ = r.out.Write(frame)
 }
 

@@ -58,6 +58,39 @@ func TestRenderANSIRestoresCursorIncludingWideChars(t *testing.T) {
 	}
 }
 
+// RenderANSIIncremental は 2J を出さない (blackout flash 抑止)。
+// それ以外は RenderANSI と同等構造 (BSU/?25l/cursor home/rows/cursor
+// 復元/?25h/ESU)。
+func TestRenderANSIIncrementalNoFullClear(t *testing.T) {
+	s := NewScrollRenderer()
+	v := NewModel(20, 5)
+	v.Feed([]byte("\x1b[1;1Hhello"))
+	// 一度 RenderANSI して lastOy 等の state を確定
+	_ = s.RenderANSI(v, 5, 20)
+
+	frame := string(s.RenderANSIIncremental(v, 5, 20))
+
+	// 2J を含まない (blackout 源無し)
+	if strings.Contains(frame, "\x1b[2J") {
+		t.Fatalf("incremental frame contains \\x1b[2J: %q", frame)
+	}
+	// 同期囲い (BSU/ESU) と cursor hide は残す
+	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[?25l\x1b[H") {
+		t.Fatalf("incremental frame prefix unexpected: %q", frame[:30])
+	}
+	if !strings.HasSuffix(frame, "\x1b[?2026l") {
+		t.Fatalf("incremental frame suffix unexpected: %q", frame)
+	}
+	// cells が含まれる (上書き emit)
+	if !strings.Contains(frame, "hello") {
+		t.Fatalf("incremental frame missing cells: %q", frame)
+	}
+	// カーソル復元 + ?25h
+	if !strings.Contains(frame, "\x1b[?25h\x1b[?2026l") {
+		t.Fatalf("cursor show + ESU missing: %q", frame)
+	}
+}
+
 // nav 遡り中（カーソル行が viewport 外）は従来どおりカーソル復元を
 // 出さない（読書中で IME 非使用。出すと遡り表示上で誤位置になる）。
 // 加えて cursor も hide のまま ESU を出す（`?25h` を出さない＝読書中の

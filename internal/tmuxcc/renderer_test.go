@@ -7,18 +7,19 @@ import (
 	"testing"
 )
 
-// recBuf は io.Writer with byte log + write call count。
+// recBuf は io.Writer with per-call byte log。各 Write を独立 slice
+// として保持＝atomic emit 検証 (writes 数・各 chunk の中身) に使う。
 type recBuf struct {
 	mu       sync.Mutex
 	buf      bytes.Buffer
-	writes   int
+	calls    [][]byte
 	maxWrite int // 最大 1 write の bytes 数
 }
 
 func (r *recBuf) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.writes++
+	r.calls = append(r.calls, append([]byte(nil), p...))
 	if len(p) > r.maxWrite {
 		r.maxWrite = len(p)
 	}
@@ -31,7 +32,89 @@ func (r *recBuf) Bytes() []byte {
 	return append([]byte(nil), r.buf.Bytes()...)
 }
 
-func (r *recBuf) Writes() int { r.mu.Lock(); defer r.mu.Unlock(); return r.writes }
+func (r *recBuf) Calls() [][]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]byte, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+func (r *recBuf) Writes() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.calls) }
+
+// TestRenderer_SecondEmitOmitsFullClear: 2 回目以降の emit は 2J を含
+// まない (blackout 抑止)。初回のみ full RenderANSI (2J 込み) を使い
+// outer を clean state にし、以降 RenderANSIIncremental に切替える。
+func TestRenderer_SecondEmitOmitsFullClear(t *testing.T) {
+	dst := &recBuf{}
+	r := NewRenderer(dst, 20, 5)
+
+	// 1 回目: 2J 入り full
+	r.HandleOutput("%0", []byte("first\r\n"))
+	calls1 := dst.Calls()
+	if len(calls1) != 1 {
+		t.Fatalf("1st emit count: %d", len(calls1))
+	}
+	if !bytes.Contains(calls1[0], []byte("\x1b[2J")) {
+		t.Fatalf("1st emit should contain 2J for clean state: %q", calls1[0])
+	}
+
+	// 2 回目: 2J 無し incremental
+	r.HandleOutput("%0", []byte("second\r\n"))
+	calls2 := dst.Calls()
+	if len(calls2) != 2 {
+		t.Fatalf("2nd emit count: %d", len(calls2))
+	}
+	if bytes.Contains(calls2[1], []byte("\x1b[2J")) {
+		t.Fatalf("2nd emit must NOT contain 2J (blackout source): %q", calls2[1])
+	}
+	// BSU/ESU + ?25l/h は incremental でも残る
+	if !bytes.Contains(calls2[1], []byte("\x1b[?2026h")) ||
+		!bytes.Contains(calls2[1], []byte("\x1b[?2026l")) {
+		t.Fatalf("2nd emit missing BSU/ESU: %q", calls2[1])
+	}
+	if !bytes.Contains(calls2[1], []byte("\x1b[?25l")) {
+		t.Fatalf("2nd emit missing cursor hide: %q", calls2[1])
+	}
+}
+
+// TestRenderer_SetSizeReArmsFullEmit: SetSize 後の最初の emit は再び
+// 2J 入り (clean redraw)。
+func TestRenderer_SetSizeReArmsFullEmit(t *testing.T) {
+	dst := &recBuf{}
+	r := NewRenderer(dst, 20, 5)
+
+	r.HandleOutput("%0", []byte("a"))
+	r.HandleOutput("%0", []byte("b"))
+	// 2 回目は 2J 無し
+	if bytes.Contains(dst.Calls()[1], []byte("\x1b[2J")) {
+		t.Fatal("2nd emit had 2J unexpectedly")
+	}
+
+	r.SetSize(40, 10)
+	r.HandleOutput("%0", []byte("c"))
+	// SetSize 後の初回は 2J 入り full
+	last := dst.Calls()[len(dst.Calls())-1]
+	if !bytes.Contains(last, []byte("\x1b[2J")) {
+		t.Fatalf("post-resize 1st emit should be full: %q", last)
+	}
+}
+
+// TestRenderer_SetActiveReArmsFullEmit: SetActive (pane 切替) でも
+// 新 active pane の初回 emit は full (2J 入り)。
+func TestRenderer_SetActiveReArmsFullEmit(t *testing.T) {
+	dst := &recBuf{}
+	r := NewRenderer(dst, 20, 5)
+
+	r.HandleOutput("%0", []byte("a"))
+	r.HandleOutput("%0", []byte("b"))
+	r.HandleOutput("%1", []byte("c")) // 非 active＝emit せず
+	r.SetActive("%1")                 // 切替で full emit
+	last := dst.Calls()[len(dst.Calls())-1]
+	if !bytes.Contains(last, []byte("\x1b[2J")) {
+		t.Fatalf("SetActive 1st emit should be full: %q", last)
+	}
+}
 
 // TestRenderer_OutputProducesAtomicFrame: proxy frame らしき bytes を
 // Feed すると 1 回の Write で BSU/ESU 付き完全 frame が出る。
