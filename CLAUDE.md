@@ -527,6 +527,84 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
   client の `client_termfeatures` は attach 時点の解決値を保持。新 sync
   capability を有効化したいなら detach→再 attach 必要（`tmux detach-
   client -a` で session/窓無傷、user が再 attach）。
+- **tmux outer 出力の sync wrap は完全でない（2026-06-05 実測）**: `set
+  -as terminal-features ',xterm*:sync'` 宣言済 ＋ client_termfeatures に
+  sync 含む を確認しても、`script -q` で生バイト録画すると **約 50% が
+  BSU/ESU 外で裸 stream として emit** される（10s capture で 11 BSU/ESU
+  ペア・atomic 区間 9490B vs 裸 7753B）。裸 chunk は 1800-3200B 単位で
+  CUP+SGR+cell 並ぶ全行更新で、scroll 時 flicker の真因。tmux 3.6 の
+  sync wrap が pane redraw 単位では張られても、status-line refresh や
+  特定 redraw path で漏れる挙動。**proxy 側 frame は完璧 atomic
+  (`?2026h+?25l+...+?25h+?2026l` hex 確認済) で源は tmux 側**。
+- **DECSET 2026 を honor する端末の偏り**:
+  - iTerm2 3.4+: ✅ native 対応
+  - kitty/alacritty/WezTerm: ✅ native 対応
+  - VSCode terminal (xterm.js): ❌ 未実装（Web の `sync.js` が同じ理由
+    で書かれた経緯。最新でも限定的）
+  - Mac Terminal.app: ❌ 未実装（Apple は terminal feature 採用が遅い）
+  - つまり tmux が outer に BSU/ESU を完全に出していたとしても、
+    上記 ❌ 端末では atomic 描画にならない＝tmux 経由は端末依存で
+    flicker。**端末選定で品質が決まる**。
+
+## tmux 経由ちらつき残課題と対策案（2026-06-05 時点・未着手分含む）
+
+「どの PC からも tmux で同じ Claude Code」がプロジェクトの中核価値ゆえ、
+tmux 経由の品質確保は重要。Web は borrowed PC / スマホの fallback 路。
+
+- **案 A: `internal/ttysync` wrapper（idle-based byte batching）**:
+  新 subcommand `claude-master tmux-wrap -- tmux ...` で tmux を子プロセス
+  として PTY 経由 spawn、stdout を **idle 検出 (~4ms 無 byte で flush)**
+  して 1 write に集約。2026 protocol 非依存＝端末が render-tick 基盤なら
+  全端末で flicker 軽減期待。typing echo は idle 検出が短いため +2ms
+  程度で人間知覚限界以下。**前提**: 「端末は受信 byte burst を render tick
+  内に処理する」モデルが事実かを各端末で empirical 検証してから着手。
+- **案 B: tmux upstream issue / patch**: 生バイト解析・minimum repro
+  完備＝issue 品質は高い。merge は数ヶ月-年。自前 patch + Homebrew tap
+  は配布 burden 大、Windows 側 psmux には届かない。**issue 投稿のみ
+  並行・自前 patch は撤退デフォルト**。
+- **案 C: pomera firmware を 2026 対応化**: user 制御下のクライアント
+  なので確実に直せる唯一の path。pomera-tmux 専用 client 系で重要。
+- **案 D: 端末選定 ガイド**: iTerm2/WezTerm/kitty/alacritty を tmux
+  メイン端末として推奨、VSCode terminal/Terminal.app は案 A wrapper
+  経由 or Web fallback を案内。
+
+### 運用ガイド（端末別の推奨フロー）
+
+| 用途 | 推奨端末 | tmux 経路 | flicker 状態 |
+|---|---|---|---|
+| 主作業 (Mac native) | **iTerm2 / WezTerm / kitty / alacritty** | 直接 `tmux attach` | ✅ DECSET 2026 honor＝完璧 |
+| 主作業 (VSCode 統合) | VSCode terminal | `claude-master tmux-wrap -- tmux attach` 経由 | △ render-tick 内 atomic（idle batch 効果） |
+| 主作業 (macOS 同梱) | Terminal.app | `claude-master tmux-wrap -- tmux attach` 経由 | △ 同上 |
+| pomera (改造クライアント) | 自前 firmware | 直接 | ✅ firmware 側で DECSET 2026 honor 実装すること |
+| スマホ / 借りた PC | ブラウザ | Web (https 経由) | ✅ sync.js で完全 atomic |
+
+`tmux-wrap` 使用例:
+```bash
+# 既存 tmux session に wrap 経由で attach
+claude-master tmux-wrap -- tmux attach -t claude-master
+
+# 短い idle (typing 即時優先) に上書き
+claude-master tmux-wrap --idle-ms 2 -- tmux attach -t claude-master
+```
+
+実装は `internal/ttysync/` + `cmd/claude-master/tmuxwrap.go`。tmux を
+PTY 経由で子プロセス起動し、tmux→host stdout を **idle 検出 (~4ms 無
+byte で flush)** して 1 write に集約＝端末の render tick 内で atomic
+に近い描画を狙う。stdin→tmux は passthrough (typing latency +0)。
+回帰検知: `internal/ttysync/wrap_test.go` で FakeClock 駆動の burst
+集約・分離・EOF flush・error 伝搬を機械検証。
+
+empirical 検証: `scripts/diag-terminal-render.sh` を各端末で実行して
+「render-tick 基盤か byte-level か」「DECSET 2026 honor か」を観察。
+判定表通り。
+
+検討から却下:
+- ~~案 1 (proxy frame coalescing)~~: proxy frame は既に完璧。tmux 側で
+  消費されるので effect 無し。
+- ~~案 2 (tmux passthrough)~~: tmux 内側 VT 空で window 切替/resize で
+  画面真っ白 race を構造的に潰せない。
+- ~~案 3 (tmux 廃止)~~: 「どの PC からも tmux」中核価値破壊。
+- ~~案 5 (Web 格上げ)~~: Web は fallback 路で primary に格上げは価値観違反。
 
 ## 端末キー到達性（Mac JIS / VSCode / Terminal.app）
 
