@@ -29,6 +29,7 @@ import (
 // 害は無い。
 func runTmuxWrap(args []string) {
 	idleMs := 4
+	holdMs := 0 // 0 = 既定値 (32ms) を internal/ttysync 側で決定
 	rest := args
 	for len(rest) > 0 {
 		switch rest[0] {
@@ -43,6 +44,24 @@ func runTmuxWrap(args []string) {
 				os.Exit(2)
 			}
 			idleMs = n
+			rest = rest[2:]
+		case "--hold-ms":
+			if len(rest) < 2 {
+				usageTmuxWrap()
+				os.Exit(2)
+			}
+			n, err := parseIntFlag(rest[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "tmux-wrap: --hold-ms は整数 (負で無効化)")
+				os.Exit(2)
+			}
+			if n == 0 {
+				// 0 を「無効化」として渡したい場合は -1 を使う規約
+				// (Opts 仕様)。0 そのままだと既定値 32ms 適用。
+				holdMs = -1
+			} else {
+				holdMs = n
+			}
 			rest = rest[2:]
 		case "--":
 			rest = rest[1:]
@@ -64,7 +83,10 @@ done:
 		fmt.Fprintln(os.Stderr, "tmux-wrap: command not found:", rest[0])
 		os.Exit(2)
 	}
-	err := ttysync.WrapStdio(rest, ttysync.Opts{IdleMs: idleMs})
+	err := ttysync.WrapStdio(rest, ttysync.Opts{
+		IdleMs:                 idleMs,
+		HoldAfterDestructiveMs: holdMs,
+	})
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -77,10 +99,12 @@ done:
 
 func usageTmuxWrap() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master tmux-wrap [--idle-ms N] -- <cmd> [args...]\n"+
+		"usage: claude-master tmux-wrap [--idle-ms N] [--hold-ms N] -- <cmd> [args...]\n"+
 			"  <cmd> を PTY 経由で起動し、子→stdout を idle (default 4ms)\n"+
-			"  で batch して flicker 軽減。tmux 経由の VSCode terminal /\n"+
-			"  Mac Terminal.app での描画品質向上に使う。\n"+
+			"  で batch して flicker 軽減。加えて ANSI parser で画面クリア\n"+
+			"  (\\x1b[2J 等) を検出すると hold (default 32ms) に切替えて\n"+
+			"  「クリア→redraw」を同一 batch に集約＝blackout 抑止。\n"+
+			"  --hold-ms 0 で 32ms default、負値で hold mode 無効化。\n"+
 			"  例: claude-master tmux-wrap -- tmux attach -t claude-master")
 }
 

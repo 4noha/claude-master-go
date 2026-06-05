@@ -58,6 +58,15 @@ func (c *FakeClock) ActiveCount() int {
 	return n
 }
 
+// TotalCount は累計 timer 作成数 (test 同期用：「N 回目の timer arm が
+// 終わるまで待つ」のに使う＝ActiveCount だけだと前 timer が stop された
+// 直後の新規も「1」のままで区別できない)。
+func (c *FakeClock) TotalCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers)
+}
+
 // FakeTimer は Timer interface 実装。
 type FakeTimer struct {
 	c      chan time.Time
@@ -236,6 +245,125 @@ func TestPumpReadErrorPropagated(t *testing.T) {
 type erroringReader struct{ err error }
 
 func (r *erroringReader) Read(p []byte) (int, error) { return 0, r.err }
+
+// TestHoldAfterDestructiveCollapses: destructive op を含む chunk と
+// その後の cell content (timer 1 回発火を跨ぐタイミング) が、hold mode
+// により 1 batch に集約されることを確認 (blackout 抑止の核心動作)。
+func TestHoldAfterDestructiveCollapses(t *testing.T) {
+	src := newBlockingReader()
+	dst := &recordingWriter{}
+	clock := &FakeClock{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- PumpWithIdleConfig(dst, src,
+			PumpConfig{Idle: 10 * time.Millisecond, HoldAfterDestructive: 50 * time.Millisecond},
+			clock)
+	}()
+
+	// 1) \x1b[2J を push → parser が detect、hold mode arm、timer は
+	//    hold 期間 (50ms) で起動。
+	src.Push([]byte("\x1b[2J"))
+	// pump 処理待ち＋timer arm 確認 (TotalCount で 1 個目作成を待つ)
+	waitFor(t, func() bool { return readerEmpty(src) && clock.TotalCount() >= 1 }, time.Second)
+
+	if clock.ActiveCount() != 1 {
+		t.Fatalf("hold timer not active: count=%d", clock.ActiveCount())
+	}
+
+	// 2) 通常 idle 期間内に cell content を追加。push 後 main goroutine
+	//    が処理して新 timer を arm するのを待つ (= TotalCount が 2 に
+	//    なるまで)
+	src.Push([]byte("cells"))
+	waitFor(t, func() bool { return readerEmpty(src) && clock.TotalCount() >= 2 }, time.Second)
+
+	// 3) この時点でまだ flush されていないこと
+	if dst.TotalBytes() != 0 {
+		t.Fatalf("hold 中なのに flush された: bytes=%d", dst.TotalBytes())
+	}
+
+	// 4) hold 期間経過 (timer 発火) → flush
+	clock.FireAllActive()
+	waitFor(t, func() bool { return dst.TotalBytes() > 0 }, time.Second)
+
+	calls := dst.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("destructive + cell が 1 batch に集約されてない: calls=%d", len(calls))
+	}
+	if !bytes.Equal(calls[0], []byte("\x1b[2Jcells")) {
+		t.Fatalf("集約内容不一致: got=%q", calls[0])
+	}
+
+	src.Close()
+	<-done
+}
+
+// TestHoldDisabledFallsBackToIdle: HoldAfterDestructive=0 なら従来の純
+// idle batch のみ。destructive op が来ても idle (短い方) で flush。
+func TestHoldDisabledFallsBackToIdle(t *testing.T) {
+	src := newBlockingReader()
+	dst := &recordingWriter{}
+	clock := &FakeClock{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- PumpWithIdleConfig(dst, src,
+			PumpConfig{Idle: 10 * time.Millisecond, HoldAfterDestructive: 0},
+			clock)
+	}()
+
+	src.Push([]byte("\x1b[2J"))
+	waitFor(t, func() bool { return readerEmpty(src) && clock.ActiveCount() >= 1 }, time.Second)
+	// idle (10ms) のみ＝1 timer
+	clock.FireAllActive()
+	waitFor(t, func() bool { return dst.TotalBytes() == 4 }, time.Second)
+
+	if got := len(dst.Calls()); got != 1 || !bytes.Equal(dst.Calls()[0], []byte("\x1b[2J")) {
+		t.Fatalf("hold 無効時の挙動不一致: calls=%v", dst.Calls())
+	}
+
+	src.Close()
+	<-done
+}
+
+// TestHoldResetsAfterFlush: hold mode は 1 度の flush で解除、次の
+// destructive op で再 arm される (= 連続 frame で都度 hold が効く)。
+func TestHoldResetsAfterFlush(t *testing.T) {
+	src := newBlockingReader()
+	dst := &recordingWriter{}
+	clock := &FakeClock{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- PumpWithIdleConfig(dst, src,
+			PumpConfig{Idle: 10 * time.Millisecond, HoldAfterDestructive: 50 * time.Millisecond},
+			clock)
+	}()
+
+	// 1st cycle: 2J + content → hold flush
+	src.Push([]byte("\x1b[2Jaaa"))
+	waitFor(t, func() bool { return readerEmpty(src) && clock.ActiveCount() >= 1 }, time.Second)
+	clock.FireAllActive()
+	waitFor(t, func() bool { return dst.TotalBytes() == 7 }, time.Second)
+
+	// 2nd cycle: 2J + content → 改めて hold で flush (前 cycle で hold
+	// は解除されているので、再度 arm されて 1 batch 集約)
+	src.Push([]byte("\x1b[2Jbbb"))
+	waitFor(t, func() bool { return readerEmpty(src) && clock.ActiveCount() >= 1 }, time.Second)
+	clock.FireAllActive()
+	waitFor(t, func() bool { return dst.TotalBytes() == 14 }, time.Second)
+
+	calls := dst.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("2 cycle 期待: calls=%d", len(calls))
+	}
+	if !bytes.Equal(calls[0], []byte("\x1b[2Jaaa")) || !bytes.Equal(calls[1], []byte("\x1b[2Jbbb")) {
+		t.Fatalf("cycle 内容: %q %q", calls[0], calls[1])
+	}
+
+	src.Close()
+	<-done
+}
 
 // TestRealClockBasic: RealClock + 実 time.Timer で簡易確認 (production
 // path の sanity check)。

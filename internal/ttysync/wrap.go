@@ -41,16 +41,40 @@ func getDebug() func(int) {
 	}
 }
 
-// PumpWithIdle は src から読み続けて dst へ flush するが、bytes 到着で
-// idle タイマーを (再) 起動し、idle 期間無入力で buffer を 1 write に
-// 集約して flush する。src が EOF / error を返したら残 buffer を flush
-// して返る。clock seam で test では fake timer 駆動可。
+// PumpConfig は PumpWithIdleConfig の調整値。
+type PumpConfig struct {
+	// Idle: 通常の idle 検出時間 (~4ms 想定)。bytes 無受信がこの期間
+	// 続いたら buffer を flush。
+	Idle time.Duration
+
+	// HoldAfterDestructive: ANSI parser で `\x1b[2J` 等の destructive
+	// op を検出した直後だけ「extended idle」に切替える時間 (~32ms
+	// 想定)。これにより「画面クリア → 直後の redraw」が同一 batch に
+	// 集約され、端末で blackout が visible にならなくなる。0 なら
+	// hold mode 無効 (= 純 idle batch)。
+	HoldAfterDestructive time.Duration
+}
+
+// PumpWithIdle は backward-compat 薄い shim (hold mode 無効版)。
+func PumpWithIdle(dst io.Writer, src io.Reader, idle time.Duration,
+	c Clock) error {
+	return PumpWithIdleConfig(dst, src,
+		PumpConfig{Idle: idle, HoldAfterDestructive: 0}, c)
+}
+
+// PumpWithIdleConfig は src→dst の idle-batch pump に加え、ANSI parser
+// で destructive op (画面クリア系) を検出した直後だけ idle 時間を hold
+// に延長することで「2J→redraw 区間」を同一 batch に集約する (blackout
+// 抑止)。HoldAfterDestructive=0 なら shim 同等動作。
 //
 // 不変条件:
 //   - 受信した bytes は順序保持で確実に dst へ届く (drop しない)。
 //   - flush 時の Write は **1 回呼び**、複数 chunk を集約。
 //   - src.Read 中の dst.Write はしない (interleave で順序逆転回避)。
-func PumpWithIdle(dst io.Writer, src io.Reader, idle time.Duration,
+//   - hold 中は「次の bytes 到着で再 hold」ではなく「hold 終了 (=flush
+//     完了) で hold 解除」。新たな destructive op で再 arm。
+//   - parser state は chunk 境界跨ぎで保持される。
+func PumpWithIdleConfig(dst io.Writer, src io.Reader, cfg PumpConfig,
 	c Clock) error {
 
 	type readEv struct {
@@ -78,6 +102,8 @@ func PumpWithIdle(dst io.Writer, src io.Reader, idle time.Duration,
 	var timer Timer
 	var timerC <-chan time.Time
 	dbg := getDebug()
+	parser := &ansiParser{}
+	holdActive := false
 
 	flush := func() error {
 		if len(buf) == 0 {
@@ -93,6 +119,8 @@ func PumpWithIdle(dst io.Writer, src io.Reader, idle time.Duration,
 			timer = nil
 			timerC = nil
 		}
+		holdActive = false // flush で hold mode 解除＝次の destructive
+		// 検出で再度 arm
 		return err
 	}
 
@@ -109,13 +137,33 @@ func PumpWithIdle(dst io.Writer, src io.Reader, idle time.Duration,
 				}
 				return r.err
 			}
+			// ANSI parser に流して destructive op を検出
+			if cfg.HoldAfterDestructive > 0 && !holdActive {
+				for i := 0; i < len(r.data); i++ {
+					if parser.Feed(r.data[i]) {
+						holdActive = true
+						// 1 度 hold に入れば残バイトの parser feed
+						// は不要 (どうせ hold で flush される)
+						break
+					}
+				}
+			} else if cfg.HoldAfterDestructive > 0 {
+				// 既に hold 中でも parser state 維持 (chunk 跨ぎの
+				// CSI 不完全 sequence が次の判定に影響しないよう)
+				for i := 0; i < len(r.data); i++ {
+					parser.Feed(r.data[i])
+				}
+			}
 			buf = append(buf, r.data...)
-			// idle タイマーを (再) 起動。bytes 到着の度に reset するので
-			// 連続 burst の末尾で 1 度だけ発火する＝tmux 自然 burst 境界。
+			// timer を (再) 起動。hold 中なら hold ms、それ以外 idle ms。
 			if timer != nil {
 				timer.Stop()
 			}
-			timer = c.NewTimer(idle)
+			d := cfg.Idle
+			if holdActive && cfg.HoldAfterDestructive > 0 {
+				d = cfg.HoldAfterDestructive
+			}
+			timer = c.NewTimer(d)
 			timerC = timer.C()
 		case <-timerC:
 			timer = nil
