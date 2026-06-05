@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -40,6 +42,7 @@ import (
 func runTmuxRender(args []string) {
 	socket := ""
 	session := ""
+	throttleMs := 33 // default 30 fps cap
 	rest := args
 	for len(rest) > 0 {
 		switch rest[0] {
@@ -56,6 +59,18 @@ func runTmuxRender(args []string) {
 				os.Exit(2)
 			}
 			session = rest[1]
+			rest = rest[2:]
+		case "--throttle-ms":
+			if len(rest) < 2 {
+				usageTmuxRender()
+				os.Exit(2)
+			}
+			n, err := strconv.Atoi(rest[1])
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "tmux-render: --throttle-ms は非負整数")
+				os.Exit(2)
+			}
+			throttleMs = n
 			rest = rest[2:]
 		case "-h", "--help":
 			usageTmuxRender()
@@ -89,8 +104,10 @@ func runTmuxRender(args []string) {
 		defer term.Restore(stdinFd, old)
 	}
 
-	// 4. renderer + event loop
-	r := tmuxcc.NewRenderer(os.Stdout, cols, rows)
+	// 4. renderer + event loop (throttling で高頻度 %output を coalesce)
+	r := tmuxcc.NewRendererWithThrottle(os.Stdout, cols, rows,
+		time.Duration(throttleMs)*time.Millisecond)
+	defer r.Close()
 
 	// 5. SIGWINCH → tmux 側 client resize + renderer サイズ追従
 	sigCh := make(chan os.Signal, 1)
@@ -172,11 +189,13 @@ func runTmuxRender(args []string) {
 
 func usageTmuxRender() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master tmux-render [-L socket] [-t session]\n"+
+		"usage: claude-master tmux-render [-L socket] [-t session] [--throttle-ms N]\n"+
 			"  tmux server に -CC mode で接続し proxy frame の生 bytes\n"+
 			"  を自前 renderer (screen.VT 再利用) で 1 atomic write/frame\n"+
 			"  で描画する。tmux outer render を完全 bypass＝flicker 構造\n"+
-			"  解消 (L4-A')。MVP: 単一 active pane の full-screen 描画。\n"+
-			"  multi-pane layout は将来対応。\n"+
+			"  解消 (L4-A')。\n"+
+			"  --throttle-ms: 高頻度 output を coalesce する最小間隔 (default\n"+
+			"    33ms=30 fps cap)。0 で即時 emit (throttling 無効)。\n"+
+			"  MVP: 単一 active pane の full-screen 描画。multi-pane 将来対応。\n"+
 			"  例: claude-master tmux-render -t claude-master")
 }

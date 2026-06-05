@@ -3,6 +3,7 @@ package tmuxcc
 import (
 	"io"
 	"sync"
+	"time"
 
 	"github.com/4noha/claude-master-go/internal/screen"
 )
@@ -12,17 +13,20 @@ import (
 // 設計:
 //   - %output 受信→該当 pane の screen.VT に Feed (proxy frame 構造を
 //     既存 VT がそのまま解する＝PoC で実証)
-//   - 描画は「現在の active pane の VT を full-screen で RenderANSI」＝
-//     1 atomic write to stdout (BSU/ESU で囲まれた完全 frame)
+//   - 描画は active pane の VT を行 diff で RenderANSIDiff＝1 atomic
+//     write to stdout (BSU/ESU で囲まれた完全 frame)
 //   - tmux outer render を経由しないので、tmux-outer 区間で発生した
 //     flicker (約 50% 裸 chunk) が物理的に発生しない
 //   - 多 pane の split layout は P5 で対応。MVP は active pane focus のみ
 //
-// 描画タイミング:
-//   - %output 受信ごとに即時 RenderANSI (= proxy frame ごとに 1 atomic
-//     emit)
-//   - 高頻度 emit 時の余計な描画コストは screen.RenderANSI 既存 (proxy
-//     server.go と同等) ＝既に検証済み path で性能負荷も同等
+// 描画タイミング (throttling):
+//   - 直前 emit から MinInterval 経過済なら **即時 emit** (latency 最小)
+//   - 未経過なら timer schedule＝次 tick (= 直前 emit + MinInterval) で
+//     emit。tick 内の追加 %output は同じ timer で coalesce される
+//   - これにより claude UI のような高頻度 %output (74 fps 観測)を 30 fps
+//     cap で coalesce＝tmux 通常 outer の 24 fps cycle と同等以下に
+//     収まる。低頻度 workload (test-flicker 6.8 fps) では throttle 閾値
+//     以下なので影響無し
 type Renderer struct {
 	mu   sync.Mutex
 	out  io.Writer
@@ -35,6 +39,12 @@ type Renderer struct {
 	// active pane (focus 中)。初期は最初に来た %output の pane。
 	// %active-window-changed 等の制御で更新 (将来) 。
 	active string
+
+	// throttling: 高頻度 %output を coalesce して frame rate を cap する
+	// (default 33ms = 30 fps)。MinInterval=0 で disable (即時 emit)。
+	minInterval time.Duration
+	lastEmit    time.Time
+	timer       *time.Timer // scheduled emit (nil=未 schedule)
 }
 
 type paneState struct {
@@ -42,15 +52,14 @@ type paneState struct {
 	sr *screen.ScrollRenderer
 	// initialEmitted: 初回 emit (= 2J 入り RenderANSI) 済か。これが
 	// false の間は full redraw で outer を clean state にする。以降は
-	// RenderANSIIncremental (2J 無し・既存 cell 上書き) で blackout
-	// flash を回避。SetSize / SetActive (pane 切替) で false に戻し
-	// 再 full emit する。
+	// RenderANSIDiff (変更行のみ) で blackout flash と全画面書込を回避。
+	// SetSize / SetActive (pane 切替) で false に戻し再 full emit する。
 	initialEmitted bool
 }
 
 // NewRenderer は指定サイズ・出力先で Renderer を作る。
-// cols/rows は外側端末のサイズ。tmux 側 pane size は通常これと等しい
-// (resize-pane 等で変わらない限り)。
+// throttling 無し (即時 emit) なので、coalescing が必要なら
+// NewRendererWithThrottle を使う。
 func NewRenderer(out io.Writer, cols, rows int) *Renderer {
 	return &Renderer{
 		out:   out,
@@ -60,9 +69,19 @@ func NewRenderer(out io.Writer, cols, rows int) *Renderer {
 	}
 }
 
+// NewRendererWithThrottle は emit を minInterval で coalesce する版。
+// minInterval=33ms (30 fps cap) が claude UI 高頻度 %output 74 fps を
+// 落として bare tmux 24 fps cycle 同等以下にする目安。0 で disable。
+func NewRendererWithThrottle(out io.Writer, cols, rows int, minInterval time.Duration) *Renderer {
+	r := NewRenderer(out, cols, rows)
+	r.minInterval = minInterval
+	return r
+}
+
 // SetSize は描画サイズを変更。既存 pane VT は再生成 (resize 時)。
 // 各 pane の diff baseline も破棄＝resize 後の最初の emit は full
-// redraw で outer を clean にする。
+// redraw で outer を clean にする。pending timer は停止 (新サイズで
+// emit するため)。
 func (r *Renderer) SetSize(cols, rows int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -71,10 +90,11 @@ func (r *Renderer) SetSize(cols, rows int) {
 		r.panes[id] = newPaneState(cols, rows)
 		// 新規 pane なので diff baseline は元々 nil＝full emit
 	}
+	r.stopTimerLocked()
 }
 
 // HandleOutput は %output メッセージを処理: 該当 pane VT に Feed して
-// active pane なら即 atomic re-render。
+// active pane なら emit を schedule (throttled) または即時実行。
 func (r *Renderer) HandleOutput(paneID string, data []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -91,13 +111,13 @@ func (r *Renderer) HandleOutput(paneID string, data []byte) {
 	// active pane のみ描画 (非 active への bytes は VT に蓄積するだけ＝
 	// focus 切替時に最新状態が描ける)
 	if paneID == r.active {
-		r.emitActiveLocked()
+		r.scheduleEmitLocked()
 	}
 }
 
 // SetActive は表示する pane を切替え、即 full-redraw (2J 付き)。新
 // pane の content は元の pane と無関係なので diff baseline を破棄して
-// clean redraw する。
+// clean redraw する。pending timer は停止。
 func (r *Renderer) SetActive(paneID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -108,7 +128,11 @@ func (r *Renderer) SetActive(paneID string) {
 	// 新 active pane の初回 emit は full redraw で outer を clean に
 	r.panes[paneID].initialEmitted = false
 	r.panes[paneID].sr.ResetDiffBaseline()
+	r.stopTimerLocked()
+	// pane 切替は user-driven の即時応答なので throttling を経由せず
+	// emit (lastEmit も新規 emit 時刻に更新)
 	r.emitActiveLocked()
+	r.lastEmit = time.Now()
 }
 
 // Active は現在 focus 中の paneID。
@@ -140,6 +164,59 @@ func (r *Renderer) RemovePane(paneID string) {
 	}
 }
 
+// Close は pending timer を停止 (リソース解放)。Renderer 終了時に呼ぶ。
+// 既に停止済 / timer 未起動の場合は no-op。
+func (r *Renderer) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopTimerLocked()
+}
+
+// scheduleEmitLocked は throttled emit のスケジューラ。
+// - minInterval=0: 即時 emit (throttle 無効)
+// - 直前 emit から minInterval 経過済: 即時 emit (latency 最小)
+// - 未経過: timer schedule (未 schedule のみ。多重 schedule 防止)
+//
+// 要 r.mu。
+func (r *Renderer) scheduleEmitLocked() {
+	if r.minInterval == 0 {
+		r.emitActiveLocked()
+		r.lastEmit = time.Now()
+		return
+	}
+	now := time.Now()
+	elapsed := now.Sub(r.lastEmit)
+	if elapsed >= r.minInterval {
+		// 直前 emit から十分時間経過＝即時 emit
+		r.emitActiveLocked()
+		r.lastEmit = now
+		return
+	}
+	// throttle 中＝timer schedule (既に schedule 済なら no-op)
+	if r.timer != nil {
+		return
+	}
+	delay := r.minInterval - elapsed
+	r.timer = time.AfterFunc(delay, r.firedEmit)
+}
+
+// firedEmit は throttle timer 発火 callback。lock 取って emit。
+func (r *Renderer) firedEmit() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.timer = nil
+	r.emitActiveLocked()
+	r.lastEmit = time.Now()
+}
+
+// stopTimerLocked は pending timer を停止。要 r.mu。
+func (r *Renderer) stopTimerLocked() {
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
+}
+
 // emitActiveLocked は active pane VT を 1 回の Write で out に書く。
 // **行単位 diff** で「前回 emit から変更した行のみ」再描画＝毎 frame
 // の全画面書込 (= 全 cell 書込) を構造的に消す。
@@ -150,17 +227,12 @@ func (r *Renderer) RemovePane(paneID string) {
 //   - L4-A'+ : RenderANSIIncremental (2J 抜き) で blackout 解消 → が
 //     **毎 frame 全行書込は残った**→「めちゃくちゃ更新されてチカチカ」
 //     を user 報告
-//   - L4-A'++ (本実装): RenderANSIDiff で**変更行のみ** emit。初回
-//     のみ full RenderANSI (2J 込み) で outer を clean state にし、
-//     以降 diff。tmux 通常 outer の差分描画と同等粒度＋我々の方が
-//     BSU/ESU + ?25l/h で 100% 囲んでいる分有利。
+//   - L4-A'++ : RenderANSIDiff で**変更行のみ** emit
+//   - L4-A'+++ : auto-wrap 無効化で scroll 抑止
+//   - L4-A'++++ (本実装): emit throttling で claude UI 高頻度 (74 fps)
+//     を 30 fps cap に＝tmux 通常 outer の 24 fps cycle 同等以下に
 //
-// SetSize / SetActive 時は ps.sr.ResetDiffBaseline() で diff baseline
-// を破棄＝次回 full emit (2J 入り) で clean redraw。
-//
-// outer 端末が DECSET 2026 を honor しない経路 (xterm.js / Mac
-// Terminal.app 等) でも、変更行が少なければ 1 atomic write の負荷も
-// 視覚露出も最小化される。
+// 要 r.mu。
 func (r *Renderer) emitActiveLocked() {
 	ps, ok := r.panes[r.active]
 	if !ok || r.out == nil {
