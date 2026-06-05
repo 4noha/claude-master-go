@@ -67,6 +67,8 @@ func main() {
 		runCloud(os.Args[2:])
 	case "tmux-wrap":
 		runTmuxWrap(os.Args[2:])
+	case "tmux-render":
+		runTmuxRender(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -675,5 +677,5 @@ func runCloudAttach(cfg *config.Config, args []string) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr,
-		"usage: claude-master {config|update|version|start|proxy|socket-client|attach|sessions|monitor|cloud|tmux-wrap}")
+		"usage: claude-master {config|update|version|start|proxy|socket-client|attach|sessions|monitor|cloud|tmux-wrap|tmux-render}")
 }
