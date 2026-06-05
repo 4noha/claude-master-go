@@ -58,6 +58,84 @@ func TestRenderANSIRestoresCursorIncludingWideChars(t *testing.T) {
 	}
 }
 
+// RenderANSIDiff は初回 full (RenderANSI 同等)、2 回目以降は変更行
+// だけ emit。同じ frame を 2 回 render したら 2 回目の中身は空 (header
+// + footer のみ)。
+func TestRenderANSIDiff_NoChangeEmitsHeaderFooterOnly(t *testing.T) {
+	s := NewScrollRenderer()
+	v := NewModel(20, 5)
+	v.Feed([]byte("\x1b[1;1Hhello"))
+
+	first := string(s.RenderANSIDiff(v, 5, 20))
+	// 初回は 2J 入り full
+	if !strings.Contains(first, "\x1b[2J") {
+		t.Fatalf("1st diff emit should be full (with 2J): %q", first)
+	}
+
+	second := string(s.RenderANSIDiff(v, 5, 20))
+	// 2 回目: VT 不変＝変更行ゼロ＝中身空。BSU + ?25l + cursor 復元 +
+	// ?25h + ESU のみ。
+	if strings.Contains(second, "\x1b[2J") {
+		t.Fatalf("2nd diff emit should not contain 2J: %q", second)
+	}
+	// 行 CUP (\x1b[N;1H) が無い (= 変更行 0)
+	if regexp.MustCompile(`\x1b\[\d+;1H`).MatchString(second) {
+		t.Fatalf("2nd diff with no change should have no row CUP: %q", second)
+	}
+	// header / footer は残る
+	if !strings.HasPrefix(second, "\x1b[?2026h\x1b[?25l") {
+		t.Fatalf("header missing: %q", second[:20])
+	}
+	if !strings.HasSuffix(second, "\x1b[?2026l") {
+		t.Fatalf("footer missing: %q", second)
+	}
+}
+
+// RenderANSIDiff: 1 行だけ変更した場合、その 1 行のみ emit。
+func TestRenderANSIDiff_OneRowChangeEmitsOneRow(t *testing.T) {
+	s := NewScrollRenderer()
+	v := NewModel(20, 5)
+	v.Feed([]byte("\x1b[1;1Hrow1\x1b[2;1Hrow2\x1b[3;1Hrow3"))
+	_ = s.RenderANSIDiff(v, 5, 20) // baseline 設定
+
+	// 2 行目だけ変更
+	v.Feed([]byte("\x1b[2;1HROW2!"))
+	diff := string(s.RenderANSIDiff(v, 5, 20))
+
+	if strings.Contains(diff, "\x1b[2J") {
+		t.Fatalf("diff should not contain 2J: %q", diff)
+	}
+	// 変更行 (\x1b[2;1H) 含む
+	if !strings.Contains(diff, "\x1b[2;1H") {
+		t.Fatalf("changed row 2 CUP missing: %q", diff)
+	}
+	// 変更後 cell content 含む
+	if !strings.Contains(diff, "ROW2!") {
+		t.Fatalf("new content missing: %q", diff)
+	}
+	// 他 row の CUP は含まない (row 1 / 3 は未変更)
+	for _, otherCUP := range []string{"\x1b[1;1H", "\x1b[3;1H"} {
+		if strings.Contains(diff, otherCUP) {
+			t.Fatalf("unchanged row CUP %q present: %q", otherCUP, diff)
+		}
+	}
+}
+
+// RenderANSIDiff: ResetDiffBaseline 後の次回は再度 full (2J 入り)。
+func TestRenderANSIDiff_ResetBaselineReArmsFull(t *testing.T) {
+	s := NewScrollRenderer()
+	v := NewModel(20, 5)
+	v.Feed([]byte("hello"))
+	_ = s.RenderANSIDiff(v, 5, 20) // 初回 full
+	_ = s.RenderANSIDiff(v, 5, 20) // 2 回目 diff (no change)
+
+	s.ResetDiffBaseline()
+	next := string(s.RenderANSIDiff(v, 5, 20))
+	if !strings.Contains(next, "\x1b[2J") {
+		t.Fatalf("post-reset emit should be full again: %q", next)
+	}
+}
+
 // RenderANSIIncremental は 2J を出さない (blackout flash 抑止)。
 // それ以外は RenderANSI と同等構造 (BSU/?25l/cursor home/rows/cursor
 // 復元/?25h/ESU)。

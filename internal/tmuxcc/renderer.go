@@ -61,14 +61,15 @@ func NewRenderer(out io.Writer, cols, rows int) *Renderer {
 }
 
 // SetSize は描画サイズを変更。既存 pane VT は再生成 (resize 時)。
-// initialEmitted も false にリセット＝resize 後の最初の emit は 2J
-// 付き full redraw で outer を clean にする。
+// 各 pane の diff baseline も破棄＝resize 後の最初の emit は full
+// redraw で outer を clean にする。
 func (r *Renderer) SetSize(cols, rows int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cols, r.rows = cols, rows
 	for id := range r.panes {
 		r.panes[id] = newPaneState(cols, rows)
+		// 新規 pane なので diff baseline は元々 nil＝full emit
 	}
 }
 
@@ -95,8 +96,8 @@ func (r *Renderer) HandleOutput(paneID string, data []byte) {
 }
 
 // SetActive は表示する pane を切替え、即 full-redraw (2J 付き)。新
-// pane の content は元の pane と無関係なので initialEmitted を false に
-// 戻して clean redraw する。
+// pane の content は元の pane と無関係なので diff baseline を破棄して
+// clean redraw する。
 func (r *Renderer) SetActive(paneID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -106,6 +107,7 @@ func (r *Renderer) SetActive(paneID string) {
 	r.active = paneID
 	// 新 active pane の初回 emit は full redraw で outer を clean に
 	r.panes[paneID].initialEmitted = false
+	r.panes[paneID].sr.ResetDiffBaseline()
 	r.emitActiveLocked()
 }
 
@@ -139,27 +141,40 @@ func (r *Renderer) RemovePane(paneID string) {
 }
 
 // emitActiveLocked は active pane VT を 1 回の Write で out に書く。
-// 初回は RenderANSI (2J 込み full) で outer を clean state にし、以降
-// は RenderANSIIncremental (2J 無し・既存 cell 上書き) で毎 frame の
-// blackout flash を物理的に発生させない。要 r.mu。
+// **行単位 diff** で「前回 emit から変更した行のみ」再描画＝毎 frame
+// の全画面書込 (= 全 cell 書込) を構造的に消す。
 //
-// blackout 抑止の意味: 外側端末が DECSET 2026 を honor しない経路
-// (xterm.js / Mac Terminal.app 等) では \x1b[2J を即時実行→画面真っ黒
-// →再描画＝frame ごとに blackout が visible。L4-A' tmux-render 初版で
-// この毎 frame 2J を打ってしまい「普通に全画面ちらつく」状況を再現した
-// (実機検証で確定)。incremental 切替でこれが構造的に消える。
+// 設計の歴史:
+//   - L4-A' 初版: 毎 frame screen.RenderANSI で **\x1b[2J + 全行
+//     書込** → 「全画面ちらつき」(2J flash) を user 報告
+//   - L4-A'+ : RenderANSIIncremental (2J 抜き) で blackout 解消 → が
+//     **毎 frame 全行書込は残った**→「めちゃくちゃ更新されてチカチカ」
+//     を user 報告
+//   - L4-A'++ (本実装): RenderANSIDiff で**変更行のみ** emit。初回
+//     のみ full RenderANSI (2J 込み) で outer を clean state にし、
+//     以降 diff。tmux 通常 outer の差分描画と同等粒度＋我々の方が
+//     BSU/ESU + ?25l/h で 100% 囲んでいる分有利。
+//
+// SetSize / SetActive 時は ps.sr.ResetDiffBaseline() で diff baseline
+// を破棄＝次回 full emit (2J 入り) で clean redraw。
+//
+// outer 端末が DECSET 2026 を honor しない経路 (xterm.js / Mac
+// Terminal.app 等) でも、変更行が少なければ 1 atomic write の負荷も
+// 視覚露出も最小化される。
 func (r *Renderer) emitActiveLocked() {
 	ps, ok := r.panes[r.active]
 	if !ok || r.out == nil {
 		return
 	}
-	var frame []byte
+	// RenderANSIDiff は内部で「初回は full / 以降 diff」を判定する
+	// (prevCells==nil チェック)。SetSize/SetActive で
+	// ResetDiffBaseline 呼んで初回扱いに戻す＝initialEmitted フラグ
+	// より状態管理を screen 側に寄せて bug 源を 1 箇所化。
 	if !ps.initialEmitted {
-		frame = ps.sr.RenderANSI(ps.vt, r.rows, r.cols)
+		ps.sr.ResetDiffBaseline() // 念のため (新規 pane でも no-op)
 		ps.initialEmitted = true
-	} else {
-		frame = ps.sr.RenderANSIIncremental(ps.vt, r.rows, r.cols)
 	}
+	frame := ps.sr.RenderANSIDiff(ps.vt, r.rows, r.cols)
 	_, _ = r.out.Write(frame)
 }
 

@@ -19,6 +19,11 @@ type ScrollRenderer struct {
 	anchor    int // not-follow 時の viewport 先頭絶対 oy
 	lastMaxOy int // 直近 render の max_oy（Scroll() が screen 非依存なため）
 	lastOy    int // 直近 render の viewport 先頭絶対行（カーソル相対変換用）
+
+	// prevCells: 前回 RenderANSIDiff (or RenderANSI/Incremental) emit
+	// 時点の cell grid。行単位 diff の比較元。RenderANSIDiff のみが
+	// 更新する。reset 時は nil に戻す＝次回 full emit (= 2J 入り)。
+	prevCells [][]cell
 }
 
 func NewScrollRenderer() *ScrollRenderer { return &ScrollRenderer{follow: true} }
@@ -275,6 +280,111 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	}
 	b.WriteString("\x1b[?2026l") // synchronized output end
 	return []byte(b.String())
+}
+
+// ResetDiffBaseline は prevCells を破棄して次回 RenderANSIDiff を強制
+// full emit にする。resize / pane 切替 / outer 端末が異物状態の時に
+// 呼ぶ。
+func (s *ScrollRenderer) ResetDiffBaseline() {
+	s.prevCells = nil
+}
+
+// RenderANSIDiff は前回 emit との **行単位 diff** を emit する。初回
+// (prevCells==nil) または baseline reset 後は RenderANSI と同等
+// (2J 込み full emit) で outer を clean state にし、prevCells に保存。
+// 以降は変更行のみ emit (CUP+cells+\x1b[K)。
+//
+// 必要性: tmuxcc.Renderer が毎 %output で full re-emit すると claude
+// streaming で 30 frame/sec の全画面書込になり「めちゃくちゃ更新されて
+// チカチカ」を user 報告 (L4-A'+ 実機検証)。tmux 通常 outer は cell
+// 単位 diff だが行単位でも frame サイズが 1-2 桁減＝flicker 体感が
+// 大幅低減。
+//
+// 実装方針:
+//   - 各行を cell 配列レベルで比較 (cell struct の `==` で全 field
+//     比較=ch.r/st/cont 等)
+//   - 変更行は CUP で位置決め→appendRow で full row 書き換え→\x1b[K
+//     で行末 trim (旧 cell の残りを消す)
+//   - 変更無しの行は emit せず
+//   - cursor 復元と BSU/ESU + ?25l/h は RenderANSI と同等
+func (s *ScrollRenderer) RenderANSIDiff(v *VT, vrows, vcols int) []byte {
+	if s.prevCells == nil {
+		// 初回 = full emit (RenderANSI と同じ)。次回 diff の baseline
+		// として cell grid を保存。
+		out := s.RenderANSI(v, vrows, vcols)
+		// RenderANSI が ViewCells を呼んでいるので、もう一度 ViewCells
+		// を呼んで baseline を取り出す (state は変わらない＝idempotent)
+		rows := s.ViewCells(v.hist, v.buf, vrows)
+		s.prevCells = cloneCells(rows)
+		return out
+	}
+	rows := s.ViewCells(v.hist, v.buf, vrows)
+	var b strings.Builder
+	b.WriteString("\x1b[?2026h")
+	b.WriteString("\x1b[?25l")
+	emitted := 0
+	for r := 0; r < len(rows); r++ {
+		if r < len(s.prevCells) && rowEqual(rows[r], s.prevCells[r], vcols) {
+			continue
+		}
+		// 変更行を full re-emit
+		fmt.Fprintf(&b, "\x1b[%d;1H", r+1) // 1-based CUP
+		appendRow(&b, rows[r], vcols)
+		// 行末より右に古い cell が残るケース (appendRow が vcols 分
+		// 必ず書くので通常不要だが、安全側に \x1b[K で消す)
+		b.WriteString("\x1b[K")
+		emitted++
+	}
+	// カーソル復元 (RenderANSI と同一)
+	cur := len(v.hist) + v.cy
+	crow := cur - s.lastOy + 1
+	ccol := v.cx + 1
+	if crow >= 1 && crow <= vrows {
+		if ccol < 1 {
+			ccol = 1
+		}
+		if ccol > vcols {
+			ccol = vcols
+		}
+		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
+		b.WriteString("\x1b[?25h")
+	}
+	b.WriteString("\x1b[?2026l")
+	s.prevCells = cloneCells(rows)
+	_ = emitted // 将来 debug 用
+	return []byte(b.String())
+}
+
+// rowEqual は 2 つの cell row が描画上同一か。vcols まで scan、
+// cont セル (全角継続) も含めて全 field 比較。
+func rowEqual(a, b []cell, vcols int) bool {
+	for x := 0; x < vcols; x++ {
+		var ac, bc cell
+		if x < len(a) {
+			ac = a[x]
+		}
+		if x < len(b) {
+			bc = b[x]
+		}
+		if ac != bc {
+			return false
+		}
+	}
+	return true
+}
+
+// cloneCells は cell grid の deep copy (各行 slice を別 backing array へ)。
+// next-frame baseline 保存用＝呼出元の再利用 buffer に上書きされない。
+func cloneCells(src [][]cell) [][]cell {
+	if src == nil {
+		return nil
+	}
+	out := make([][]cell, len(src))
+	for i, row := range src {
+		out[i] = make([]cell, len(row))
+		copy(out[i], row)
+	}
+	return out
 }
 
 // RenderANSIIncremental は RenderANSI と同じ frame 形だが **\x1b[2J 全
