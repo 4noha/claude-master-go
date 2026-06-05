@@ -21,6 +21,13 @@ type Opts struct {
 	// 長すぎると typing echo latency が体感される。4ms は人間知覚閾値
 	// 以下で frame burst の境界検出には十分。
 	IdleMs int
+
+	// HoldAfterDestructiveMs は ANSI parser で destructive op
+	// (\x1b[2J 等の画面クリア系) を検出した直後だけ idle を extended
+	// に切替える時間 (default 32)。これにより「画面クリア → redraw」
+	// 区間が同一 batch に集約され blackout が visible にならない。
+	// 0 で hold mode 無効。
+	HoldAfterDestructiveMs int
 }
 
 // WrapStdio は argv を子プロセスとして PTY 経由で起動し、
@@ -38,6 +45,13 @@ func WrapStdio(argv []string, opts Opts) error {
 	idle := time.Duration(opts.IdleMs) * time.Millisecond
 	if idle <= 0 {
 		idle = 4 * time.Millisecond
+	}
+	hold := time.Duration(opts.HoldAfterDestructiveMs) * time.Millisecond
+	if opts.HoldAfterDestructiveMs == 0 {
+		// 既定 32ms = 60Hz 約 2 tick・blackout→redraw 区間カバーに十分
+		hold = 32 * time.Millisecond
+	} else if opts.HoldAfterDestructiveMs < 0 {
+		hold = 0 // 明示無効化
 	}
 
 	// 1) PTY 確保
@@ -93,7 +107,9 @@ func WrapStdio(argv []string, opts Opts) error {
 	// 7) ptmx → stdout (idle batch・flicker 軽減の核心)
 	pumpDone := make(chan error, 1)
 	go func() {
-		pumpDone <- PumpWithIdle(os.Stdout, ptmx, idle, RealClock{})
+		pumpDone <- PumpWithIdleConfig(os.Stdout, ptmx,
+			PumpConfig{Idle: idle, HoldAfterDestructive: hold},
+			RealClock{})
 	}()
 
 	// 8) 子終了待ち
