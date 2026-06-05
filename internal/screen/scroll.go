@@ -231,6 +231,24 @@ func (s *ScrollRenderer) ViewCells(hist, vis [][]cell, vrows int) [][]cell {
 	return out
 }
 
+// frameHeader / frameFooter は 3 種類の render 関数 (RenderANSI /
+// Incremental / Diff) で共通の「frame 内 atomic 化＋scroll 抑止」
+// シーケンス。
+//
+// `\x1b[?7l` で **auto-wrap mode を無効化**するのが scroll 抑止の核心:
+// row の最終列 (vcols 番目) に cell を書くと、auto-wrap 既定の端末では
+// cursor が次行 col 1 に進む。**最後の visible 行**で wrap が発生する
+// と端末は scroll down で 1 行下げる＝frame ごとに 1 行ずつコンテンツが
+// 上にずれて「更新ごとに scroll が暴れる」事象 (L4-A'++ 実機検証で
+// 発覚)。frame 末尾の `?7h` で元の状態に戻す。
+const (
+	frameHeader = "\x1b[?2026h" + // BSU: 同期出力開始
+		"\x1b[?25l" + // cursor hide (sync 非対応端末対策)
+		"\x1b[?7l" // auto-wrap 無効 (最終列 wrap → scroll 抑止)
+	frameFooter = "\x1b[?7h" + // auto-wrap 元に戻す
+		"\x1b[?2026l" // ESU: 同期出力終了
+)
+
 // RenderANSI は viewport を同期出力で囲んだ ANSI フレームに（Python
 // render_viewport のバイト構造移植: 先頭 \x1b[?2026h、全消去後カーソルを
 // 画面最下部へ(_CLEAR_SEQ 規律)、行毎 appendRow、末尾 \x1b[?2026l）。
@@ -247,8 +265,7 @@ func (s *ScrollRenderer) ViewCells(hist, vis [][]cell, vrows int) [][]cell {
 func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 	rows := s.ViewCells(v.hist, v.buf, vrows)
 	var b strings.Builder
-	b.WriteString("\x1b[?2026h")        // synchronized output begin
-	b.WriteString("\x1b[?25l")          // hide cursor: sync 非対応外側端末でのちらつき防止
+	b.WriteString(frameHeader)          // BSU + ?25l + ?7l (scroll 抑止)
 	b.WriteString("\x1b[2J\x1b[9999;1H") // _CLEAR_SEQ: 全消去→最下部
 	b.WriteString("\x1b[H")
 	for i, row := range rows {
@@ -278,7 +295,7 @@ func (s *ScrollRenderer) RenderANSI(v *VT, vrows, vcols int) []byte {
 		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
 		b.WriteString("\x1b[?25h") // show cursor: 復元位置が確定したので戻す
 	}
-	b.WriteString("\x1b[?2026l") // synchronized output end
+	b.WriteString(frameFooter) // ?7h + ESU
 	return []byte(b.String())
 }
 
@@ -320,8 +337,7 @@ func (s *ScrollRenderer) RenderANSIDiff(v *VT, vrows, vcols int) []byte {
 	}
 	rows := s.ViewCells(v.hist, v.buf, vrows)
 	var b strings.Builder
-	b.WriteString("\x1b[?2026h")
-	b.WriteString("\x1b[?25l")
+	b.WriteString(frameHeader) // BSU + ?25l + ?7l (scroll 抑止)
 	emitted := 0
 	for r := 0; r < len(rows); r++ {
 		if r < len(s.prevCells) && rowEqual(rows[r], s.prevCells[r], vcols) {
@@ -349,7 +365,7 @@ func (s *ScrollRenderer) RenderANSIDiff(v *VT, vrows, vcols int) []byte {
 		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
 		b.WriteString("\x1b[?25h")
 	}
-	b.WriteString("\x1b[?2026l")
+	b.WriteString(frameFooter) // ?7h + ESU
 	s.prevCells = cloneCells(rows)
 	_ = emitted // 将来 debug 用
 	return []byte(b.String())
@@ -407,9 +423,8 @@ func cloneCells(src [][]cell) [][]cell {
 func (s *ScrollRenderer) RenderANSIIncremental(v *VT, vrows, vcols int) []byte {
 	rows := s.ViewCells(v.hist, v.buf, vrows)
 	var b strings.Builder
-	b.WriteString("\x1b[?2026h") // synchronized output begin
-	b.WriteString("\x1b[?25l")   // hide cursor (sync 非対応端末対策・RenderANSI と同様)
-	b.WriteString("\x1b[H")      // cursor home (2J 無し＝既存 cell を残す)
+	b.WriteString(frameHeader) // BSU + ?25l + ?7l (scroll 抑止)
+	b.WriteString("\x1b[H")    // cursor home (2J 無し＝既存 cell を残す)
 	for i, row := range rows {
 		appendRow(&b, row, vcols)
 		if i+1 < len(rows) {
@@ -430,6 +445,6 @@ func (s *ScrollRenderer) RenderANSIIncremental(v *VT, vrows, vcols int) []byte {
 		fmt.Fprintf(&b, "\x1b[%d;%dH", crow, ccol)
 		b.WriteString("\x1b[?25h")
 	}
-	b.WriteString("\x1b[?2026l")
+	b.WriteString(frameFooter) // ?7h + ESU
 	return []byte(b.String())
 }

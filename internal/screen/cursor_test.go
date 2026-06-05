@@ -8,7 +8,7 @@ import (
 
 // 末尾の同期終了直前に出るカーソル復元 CUP を取り出す（無ければ ""）。
 // 復元時は `\x1b[r;cH\x1b[?25h\x1b[?2026l` の順（show cursor を伴う）。
-var cupRe = regexp.MustCompile(`\x1b\[(\d+);(\d+)H\x1b\[\?25h\x1b\[\?2026l$`)
+var cupRe = regexp.MustCompile(`\x1b\[(\d+);(\d+)H\x1b\[\?25h\x1b\[\?7h\x1b\[\?2026l$`)
 
 func trailingCUP(frame []byte) string {
 	m := cupRe.FindSubmatch(frame)
@@ -52,8 +52,8 @@ func TestRenderANSIRestoresCursorIncludingWideChars(t *testing.T) {
 	// (例: tmux + VSCode) でフレーム描画中の cursor 散らかりを防ぐ
 	// 必須要素なので不変条件に含める。
 	frame := string(s2.RenderANSI(v2, 5, 20))
-	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[?25l\x1b[2J\x1b[9999;1H\x1b[H") ||
-		!strings.HasSuffix(frame, "\x1b[?25h\x1b[?2026l") {
+	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[2J\x1b[9999;1H\x1b[H") ||
+		!strings.HasSuffix(frame, "\x1b[?25h\x1b[?7h\x1b[?2026l") {
 		t.Fatalf("フレーム構造が崩れた: %q", frame)
 	}
 }
@@ -153,7 +153,7 @@ func TestRenderANSIIncrementalNoFullClear(t *testing.T) {
 		t.Fatalf("incremental frame contains \\x1b[2J: %q", frame)
 	}
 	// 同期囲い (BSU/ESU) と cursor hide は残す
-	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[?25l\x1b[H") {
+	if !strings.HasPrefix(frame, "\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[H") {
 		t.Fatalf("incremental frame prefix unexpected: %q", frame[:30])
 	}
 	if !strings.HasSuffix(frame, "\x1b[?2026l") {
@@ -163,8 +163,8 @@ func TestRenderANSIIncrementalNoFullClear(t *testing.T) {
 	if !strings.Contains(frame, "hello") {
 		t.Fatalf("incremental frame missing cells: %q", frame)
 	}
-	// カーソル復元 + ?25h
-	if !strings.Contains(frame, "\x1b[?25h\x1b[?2026l") {
+	// カーソル復元 + ?25h + ?7h + ESU
+	if !strings.Contains(frame, "\x1b[?25h\x1b[?7h\x1b[?2026l") {
 		t.Fatalf("cursor show + ESU missing: %q", frame)
 	}
 }
