@@ -673,7 +673,9 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
   特定 redraw path で漏れる挙動。**proxy 側 frame は完璧 atomic
   (`?2026h+?25l+...+?25h+?2026l` hex 確認済) で源は tmux 側**。
 - **DECSET 2026 を honor する端末（DECRQM 実測で判定すること）**:
-  - iTerm2 3.4+: ✅ native 対応（documented）
+  - iTerm2 3.4+: ✅ native 対応（documented・**2026-06-12 実機確認**:
+    proxy v0.3.1＋パッチ tmux 経由の実 claude 窓でちらつき無しを
+    ユーザー確認＝Terminal.app ❌ 判定の対照実証）
   - kitty/alacritty/WezTerm: ✅ native 対応（documented）
   - **VSCode terminal: ✅ 認識する（2026-06-05 本 PC 実測。DECRQM
     `CSI ?2026$p` → `CSI ?2026;2$y`＝Ps=2 認識済）**。⚠過去の調査で
