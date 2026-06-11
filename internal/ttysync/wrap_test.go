@@ -18,12 +18,46 @@ type FakeClock struct {
 }
 
 // NewTimer は FakeTimer を返し timers に追加。Stop 後の timer は active=false。
+// FakeTimer は clock の mutex を共有＝Stop (pump goroutine) と
+// FireAllActive (test goroutine) の active 読書きが race しない。
 func (c *FakeClock) NewTimer(d time.Duration) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &FakeTimer{c: make(chan time.Time, 1), active: true}
+	t := &FakeTimer{mu: &c.mu, c: make(chan time.Time, 1), active: true, dur: d}
 	c.timers = append(c.timers, t)
 	return t
+}
+
+// FireDuration は指定 duration で作られた active timer のみ発火する
+// (idle と maxHold を選択的に発火させる test 用)。発火数を返す。
+func (c *FakeClock) FireDuration(d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.timers {
+		if t.active && t.dur == d {
+			t.active = false
+			select {
+			case t.c <- time.Now():
+				n++
+			default:
+			}
+		}
+	}
+	return n
+}
+
+// CountDuration は指定 duration の累計 timer 作成数 (test 同期用)。
+func (c *FakeClock) CountDuration(d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.timers {
+		if t.dur == d {
+			n++
+		}
+	}
+	return n
 }
 
 // Triggers は active な timer 全てを発火 (1 個ずつ・複数同時発火させたい時)。
@@ -67,14 +101,21 @@ func (c *FakeClock) TotalCount() int {
 	return len(c.timers)
 }
 
-// FakeTimer は Timer interface 実装。
+// FakeTimer は Timer interface 実装 (mu = 親 FakeClock の mutex 共有)。
 type FakeTimer struct {
+	mu     *sync.Mutex
 	c      chan time.Time
 	active bool
+	dur    time.Duration
 }
 
 func (t *FakeTimer) C() <-chan time.Time { return t.c }
-func (t *FakeTimer) Stop()                { t.active = false }
+
+func (t *FakeTimer) Stop() {
+	t.mu.Lock()
+	t.active = false
+	t.mu.Unlock()
+}
 
 // blockingReader は test 用 src。Push で bytes を流し、Close で EOF を返す。
 type blockingReader struct {

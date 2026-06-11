@@ -53,6 +53,23 @@ type PumpConfig struct {
 	// 集約され、端末で blackout が visible にならなくなる。0 なら
 	// hold mode 無効 (= 純 idle batch)。
 	HoldAfterDestructive time.Duration
+
+	// SyncWrap: true なら各 flush を BSU/ESU (DECSET 2026) で囲み、
+	// 内側に紛れた既存 marker は除去 (syncwrap.go)。2026 honor 端末
+	// (iTerm2 等・実測 m1 で bare tmux は 64% 裸 emit) で flush 全体が
+	// atomic 描画になる。非対応端末では 16 bytes/flush の無害な
+	// オーバーヘッドのみ。
+	SyncWrap bool
+
+	// MaxHold: buffer 最古 byte の最大滞留時間。idle が来ない連続
+	// stream (例: cat 大ファイル) でも MaxHold 経過で強制 flush＝
+	// 「無限に buffer して画面が止まる」latent bug の backstop。
+	// 0 で無効。
+	MaxHold time.Duration
+
+	// MaxBuffer: buffer サイズ上限。超えたら即時 flush (メモリ保護)。
+	// 0 で無効。
+	MaxBuffer int
 }
 
 // PumpWithIdle は backward-compat 薄い shim (hold mode 無効版)。
@@ -101,26 +118,109 @@ func PumpWithIdleConfig(dst io.Writer, src io.Reader, cfg PumpConfig,
 	var buf []byte
 	var timer Timer
 	var timerC <-chan time.Time
+	var maxHoldTimer Timer
+	var maxHoldC <-chan time.Time
 	dbg := getDebug()
 	parser := &ansiParser{}
+	tracker := newTailTracker() // SyncWrap 時のみ feed
 	holdActive := false
 
-	flush := func() error {
-		if len(buf) == 0 {
-			return nil
-		}
-		if dbg != nil {
-			dbg(len(buf))
-		}
-		_, err := dst.Write(buf)
-		buf = buf[:0]
+	stopIdle := func() {
 		if timer != nil {
 			timer.Stop()
 			timer = nil
 			timerC = nil
 		}
-		holdActive = false // flush で hold mode 解除＝次の destructive
-		// 検出で再度 arm
+	}
+	stopMaxHold := func() {
+		if maxHoldTimer != nil {
+			maxHoldTimer.Stop()
+			maxHoldTimer = nil
+			maxHoldC = nil
+		}
+	}
+
+	// maxTailHold: 進行中 sequence の hold 上限。unterminated OSC 等の
+	// 病的 stream で tail が無限成長するのを防ぐ。超えたら degrade
+	// (wrap せず raw emit＝挿入による sequence 破壊は起きない)。
+	const maxTailHold = 32 << 10
+
+	// flush は buffer を dst へ書く。
+	//
+	// SyncWrap 時の不変条件 (adversarial review で確定した「flush 境界
+	// が escape sequence / UTF-8 rune の途中だと ESU/BSU 挿入で可視
+	// ゴミが出る」bug の根治):
+	//   - tracker が「進行中 sequence の開始 offset」を厳密に追跡
+	//   - emit するのは ground 状態で終わる head 部分のみ。tail
+	//     (進行中 sequence) は buf に hold し次 bytes と自然結合
+	//   - hold した tail に対して timer は arm しない (不完全 sequence
+	//     は端末でも描画不能＝急いで流す価値が無い)。次の bytes 到着
+	//     or EOF で解消＝無限ループも起きない
+	//   - eof=true (stream 終端) のみ tail を raw で後置 emit (後続
+	//     BSU が無いので挿入破壊は起きない・dangling 不完全 sequence
+	//     は端末で無害に破棄される)
+	flush := func(eof bool) error {
+		if len(buf) == 0 {
+			return nil
+		}
+		stopIdle()
+		stopMaxHold()
+		holdActive = false // flush で hold 解除＝次の destructive で再 arm
+		if !cfg.SyncWrap {
+			if dbg != nil {
+				dbg(len(buf))
+			}
+			_, err := dst.Write(buf)
+			buf = buf[:0]
+			return err
+		}
+		split := tracker.SplitAt(len(buf))
+		if len(buf)-split > maxTailHold {
+			// 病的 long sequence: wrap せず raw emit (挿入無し＝破壊無し)
+			if dbg != nil {
+				dbg(len(buf))
+			}
+			_, err := dst.Write(buf)
+			buf = buf[:0]
+			tracker.Reset()
+			return err
+		}
+		head := buf[:split]
+		payload, carry := stripSyncMarkers(head)
+		// head は tracker により ground 終端なので carry は常に nil の
+		// はずだが、万一に備え byte 保存を優先して payload へ戻す。
+		if len(carry) > 0 {
+			payload = append(payload, carry...)
+		}
+		var out []byte
+		if len(payload) > 0 {
+			out = wrapSync(payload)
+		}
+		if eof {
+			// 終端: hold 中 tail を raw で後置 (後続 BSU 無し＝安全)
+			out = append(out, buf[split:]...)
+			buf = buf[:0]
+			tracker.Reset()
+			if len(out) == 0 {
+				return nil
+			}
+			if dbg != nil {
+				dbg(len(out))
+			}
+			_, err := dst.Write(out)
+			return err
+		}
+		// tail を buf 先頭へ繰越し (copy は overlap-safe)
+		rest := buf[split:]
+		buf = append(buf[:0], rest...)
+		tracker.Rebase(split)
+		if len(out) == 0 {
+			return nil // marker のみ or 全部 tail＝emit する実体無し
+		}
+		if dbg != nil {
+			dbg(len(out))
+		}
+		_, err := dst.Write(out)
 		return err
 	}
 
@@ -128,10 +228,10 @@ func PumpWithIdleConfig(dst io.Writer, src io.Reader, cfg PumpConfig,
 		select {
 		case r, ok := <-reads:
 			if !ok {
-				return flush()
+				return flush(true)
 			}
 			if r.err != nil {
-				_ = flush()
+				_ = flush(true)
 				if r.err == io.EOF {
 					return nil
 				}
@@ -154,21 +254,47 @@ func PumpWithIdleConfig(dst io.Writer, src io.Reader, cfg PumpConfig,
 					parser.Feed(r.data[i])
 				}
 			}
-			buf = append(buf, r.data...)
-			// timer を (再) 起動。hold 中なら hold ms、それ以外 idle ms。
-			if timer != nil {
-				timer.Stop()
+			if cfg.SyncWrap {
+				base := len(buf)
+				for i := 0; i < len(r.data); i++ {
+					tracker.Feed(r.data[i], base+i)
+				}
 			}
+			buf = append(buf, r.data...)
+			// MaxBuffer 超過は即時 flush (メモリ保護・タイマー非依存)
+			if cfg.MaxBuffer > 0 && len(buf) >= cfg.MaxBuffer {
+				if err := flush(false); err != nil {
+					return err
+				}
+				continue
+			}
+			// MaxHold: 未 arm なら arm (flush で停止→次の append で再
+			// arm)。bytes が来続けても既存 timer は再 arm しない＝最古
+			// byte の滞留時間で必ず発火＝連続 stream でも描画が止まら
+			// ない (idle だけだと永遠に reset され buffer が無限成長
+			// する latent bug の backstop)。
+			if cfg.MaxHold > 0 && maxHoldTimer == nil {
+				maxHoldTimer = c.NewTimer(cfg.MaxHold)
+				maxHoldC = maxHoldTimer.C()
+			}
+			// idle timer を (再) 起動。hold 中なら hold ms。
 			d := cfg.Idle
 			if holdActive && cfg.HoldAfterDestructive > 0 {
 				d = cfg.HoldAfterDestructive
 			}
+			stopIdle()
 			timer = c.NewTimer(d)
 			timerC = timer.C()
 		case <-timerC:
 			timer = nil
 			timerC = nil
-			if err := flush(); err != nil {
+			if err := flush(false); err != nil {
+				return err
+			}
+		case <-maxHoldC:
+			maxHoldTimer = nil
+			maxHoldC = nil
+			if err := flush(false); err != nil {
 				return err
 			}
 		}

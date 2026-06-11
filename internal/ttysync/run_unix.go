@@ -26,8 +26,19 @@ type Opts struct {
 	// (\x1b[2J 等の画面クリア系) を検出した直後だけ idle を extended
 	// に切替える時間 (default 32)。これにより「画面クリア → redraw」
 	// 区間が同一 batch に集約され blackout が visible にならない。
-	// 0 で hold mode 無効。
+	// 0 で default、負値で hold mode 無効。
 	HoldAfterDestructiveMs int
+
+	// SyncWrap は各 flush を BSU/ESU (DECSET 2026) で囲む (内側 marker
+	// は除去)。DECSET 2026 honor 端末で flush 全体が atomic 描画になる
+	// ＝m1 実測の「64% 裸 stream」を 100% wrap に引き上げる本命機能。
+	// 非対応端末では 16 bytes/flush の無害なオーバーヘッドのみ。
+	SyncWrap bool
+
+	// MaxHoldMs は buffer 最古 byte の最大滞留時間 (default 50)。idle
+	// が来ない連続 stream でも強制 flush＝描画停止/無限 buffer の
+	// backstop。0 で default、負値で無効。
+	MaxHoldMs int
 }
 
 // WrapStdio は argv を子プロセスとして PTY 経由で起動し、
@@ -52,6 +63,13 @@ func WrapStdio(argv []string, opts Opts) error {
 		hold = 32 * time.Millisecond
 	} else if opts.HoldAfterDestructiveMs < 0 {
 		hold = 0 // 明示無効化
+	}
+	maxHold := time.Duration(opts.MaxHoldMs) * time.Millisecond
+	if opts.MaxHoldMs == 0 {
+		// 既定 50ms: 連続 stream 中でも 20fps 相当で必ず描画が進む
+		maxHold = 50 * time.Millisecond
+	} else if opts.MaxHoldMs < 0 {
+		maxHold = 0
 	}
 
 	// 1) PTY 確保
@@ -108,7 +126,13 @@ func WrapStdio(argv []string, opts Opts) error {
 	pumpDone := make(chan error, 1)
 	go func() {
 		pumpDone <- PumpWithIdleConfig(os.Stdout, ptmx,
-			PumpConfig{Idle: idle, HoldAfterDestructive: hold},
+			PumpConfig{
+				Idle:                 idle,
+				HoldAfterDestructive: hold,
+				SyncWrap:             opts.SyncWrap,
+				MaxHold:              maxHold,
+				MaxBuffer:            512 << 10, // 512KB メモリ保護
+			},
 			RealClock{})
 	}()
 

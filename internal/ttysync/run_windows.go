@@ -5,8 +5,12 @@ package ttysync
 import "errors"
 
 // Opts は WrapStdio の調整パラメータ (Windows 版はまだ実装無し)。
+// 互換: run_unix.go の Opts と同 field 集合 (build 通すため)。
 type Opts struct {
-	IdleMs int
+	IdleMs                 int
+	HoldAfterDestructiveMs int
+	SyncWrap               bool
+	MaxHoldMs              int
 }
 
 // WrapStdio は Windows 未実装 (ConPTY 経由で同等実装可能・将来対応)。
