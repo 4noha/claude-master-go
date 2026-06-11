@@ -536,15 +536,20 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
   sync wrap が pane redraw 単位では張られても、status-line refresh や
   特定 redraw path で漏れる挙動。**proxy 側 frame は完璧 atomic
   (`?2026h+?25l+...+?25h+?2026l` hex 確認済) で源は tmux 側**。
-- **DECSET 2026 を honor する端末の偏り**:
-  - iTerm2 3.4+: ✅ native 対応
-  - kitty/alacritty/WezTerm: ✅ native 対応
-  - VSCode terminal (xterm.js): ❌ 未実装（Web の `sync.js` が同じ理由
-    で書かれた経緯。最新でも限定的）
-  - Mac Terminal.app: ❌ 未実装（Apple は terminal feature 採用が遅い）
-  - つまり tmux が outer に BSU/ESU を完全に出していたとしても、
-    上記 ❌ 端末では atomic 描画にならない＝tmux 経由は端末依存で
-    flicker。**端末選定で品質が決まる**。
+- **DECSET 2026 を honor する端末（DECRQM 実測で判定すること）**:
+  - iTerm2 3.4+: ✅ native 対応（documented）
+  - kitty/alacritty/WezTerm: ✅ native 対応（documented）
+  - **VSCode terminal: ✅ 認識する（2026-06-05 本 PC 実測。DECRQM
+    `CSI ?2026$p` → `CSI ?2026;2$y`＝Ps=2 認識済）**。⚠過去の調査で
+    「xterm.js は 2026 非対応（sync.js が書かれた理由）」と**未検証の
+    まま断定して L4 設計を狂わせた誤情報**。Web の sync.js は古い
+    bundled xterm.js 向けで、VS Code 本体の xterm.js は対応済み。
+    端末対応は推測せず `scripts/probe-term-sync.py`（DECRQM・目視不要）
+    で**機械判定する**こと。
+  - Mac Terminal.app: 未実測（probe 未実行。推定 ❌）
+  - 帰結: VSCode terminal で bare tmux が flicker する真因は端末では
+    なく **tmux outer の 64% 裸 emit（m1 実測）**。`tmux-wrap` の
+    sync-wrap（flush を 100% BSU/ESU で囲む）で構造的に塞がる。
 
 ## tmux 経由ちらつき残課題と対策案（2026-06-05 時点・未着手分含む）
 
@@ -572,31 +577,39 @@ tmux 経由の品質確保は重要。Web は borrowed PC / スマホの fallbac
 
 | 用途 | 推奨端末 | tmux 経路 | flicker 状態 |
 |---|---|---|---|
-| 主作業 (Mac native) | **iTerm2 / WezTerm / kitty / alacritty** | 直接 `tmux attach` | ✅ DECSET 2026 honor＝完璧 |
-| 主作業 (VSCode 統合) | VSCode terminal | `claude-master tmux-wrap -- tmux attach` 経由 | △ render-tick 内 atomic（idle batch 効果） |
-| 主作業 (macOS 同梱) | Terminal.app | `claude-master tmux-wrap -- tmux attach` 経由 | △ 同上 |
-| pomera (改造クライアント) | 自前 firmware | 直接 | ✅ firmware 側で DECSET 2026 honor 実装すること |
+| 主作業 (VSCode 統合) | VSCode terminal (**2026 認識を DECRQM 実測済**) | `claude-master tmux-wrap -- tmux attach` 経由 | ✅ sync-wrap が flush を 100% BSU/ESU 化＝atomic 描画 |
+| 主作業 (Mac native) | iTerm2 / WezTerm / kitty / alacritty | 同上 (bare attach だと tmux 裸 64% で flicker する) | ✅ 同上 |
+| 主作業 (macOS 同梱) | Terminal.app | probe 未実測。`tmux-wrap` は無害なので使用可 | ? (2026 非認識なら効果は idle batch のみ) |
+| pomera (改造クライアント) | 自前 firmware | 直接 | firmware 側で DECSET 2026 honor 実装すること |
 | スマホ / 借りた PC | ブラウザ | Web (https 経由) | ✅ sync.js で完全 atomic |
 
 `tmux-wrap` 使用例:
 ```bash
-# 既存 tmux session に wrap 経由で attach
+# 既存 tmux session に wrap 経由で attach (sync-wrap 既定 ON)
 claude-master tmux-wrap -- tmux attach -t claude-master
 
 # 短い idle (typing 即時優先) に上書き
 claude-master tmux-wrap --idle-ms 2 -- tmux attach -t claude-master
+
+# sync-wrap を切って素の idle batch のみ (比較検証用)
+claude-master tmux-wrap --no-sync-wrap -- tmux attach -t claude-master
 ```
 
 実装は `internal/ttysync/` + `cmd/claude-master/tmuxwrap.go`。tmux を
 PTY 経由で子プロセス起動し、tmux→host stdout を **idle 検出 (~4ms 無
-byte で flush)** して 1 write に集約＝端末の render tick 内で atomic
-に近い描画を狙う。stdin→tmux は passthrough (typing latency +0)。
-回帰検知: `internal/ttysync/wrap_test.go` で FakeClock 駆動の burst
-集約・分離・EOF flush・error 伝搬を機械検証。
+byte で flush)** で 1 write に集約し、**flush 全体を BSU/ESU で wrap
+（sync-wrap・内側 marker は exact-match で除去）**＝m1 実測の「64%
+裸 emit」を 0% にする。2026 認識端末（VSCode terminal 実測済・iTerm2
+documented）で flush 単位の atomic 描画になる。加えて MaxHold (50ms)
+が連続 stream でも描画を止めない backstop、MaxBuffer (512KB) がメモリ
+保護。stdin→tmux は passthrough (typing latency +0)。
+回帰検知: `internal/ttysync/{wrap,syncwrap}_test.go` で FakeClock 駆動
+の burst 集約・分離・EOF flush・marker strip・split-marker carry・
+MaxHold/MaxBuffer を機械検証。
 
-empirical 検証: `scripts/diag-terminal-render.sh` を各端末で実行して
-「render-tick 基盤か byte-level か」「DECSET 2026 honor か」を観察。
-判定表通り。
+端末対応の判定は推測禁止: `scripts/probe-term-sync.py`（DECRQM・目視
+不要）で機械判定。DECRQM 未応答端末のみ `scripts/diag-terminal-render
+.sh` の test4（目視）で最終判定。
 
 検討から却下:
 - ~~案 1 (proxy frame coalescing)~~: proxy frame は既に完璧。tmux 側で
