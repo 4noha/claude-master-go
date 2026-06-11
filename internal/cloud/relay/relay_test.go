@@ -3,14 +3,18 @@ package relay
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -254,5 +258,130 @@ func TestSessionRequiresGrant(t *testing.T) {
 	r2.Body.Close()
 	if r2.StatusCode == http.StatusForbidden {
 		t.Fatal("grant true なのに 403")
+	}
+}
+
+// TestViewerTakeoverKeepsStreamIntact: タブ再読込/コンソール切替の実挙動
+// ＝「旧 viewer conn が生きているうちに新 viewer が同 sid へ接続」を再現
+// する回帰テスト。旧実装の実害 2 つを検出する（2026-06-11 実報告
+// 「Web の表示が壊れる」: 正しい transcript に別時点の footer 断片が
+// スプライスされた合成画面のまま凍結）:
+//
+//	(1) serve が slot を黙って上書きして第 2 pump を起動し、旧 pump と
+//	    同じ source conn を並走 read → chunk 奪い合い＝新 viewer の byte
+//	    stream に歯抜け（frame 中間欠落＝表示破壊）。
+//	(2) 旧 pump 終了時の cleanup が se.viewer（その時点では新 viewer）と
+//	    source を無条件 close → takeover 直後に新 viewer が即死＝壊れた
+//	    画面のまま凍結。
+//
+// 期待挙動: 新 viewer の受信列は最初の chunk から一切欠番なく連続し、
+// source は生き続け、旧 viewer は takeover 時に閉じられる。viewer が
+// 本当に死んだ時は従来どおり source も畳まれる（最後に検証）。
+func TestViewerTakeoverKeepsStreamIntact(t *testing.T) {
+	rl := NewServer()
+	hs := httptest.NewServer(http.HandlerFunc(rl.ServeHTTP))
+	defer hs.Close()
+	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http")
+	ctx := context.Background()
+
+	src, err := Dial(ctx, wsURL, "S", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	v1, err := Dial(ctx, wsURL, "S", "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v1.Close()
+
+	// source: 連番 chunk を送り続ける（実 proxy の連続 frame 相当）
+	var srcErr atomic.Value
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := src.Write([]byte(fmt.Sprintf("CHUNK-%06d|", i))); err != nil {
+				srcErr.Store(err)
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	defer func() { close(stop); wg.Wait() }()
+
+	buf := make([]byte, 8192)
+	_ = v1.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := v1.Read(buf); err != nil {
+		t.Fatalf("v1 が受信できない（前提崩れ）: %v", err)
+	}
+
+	// 新 viewer (タブ再読込相当) が takeover
+	v2, err := Dial(ctx, wsURL, "S", "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v2.Close()
+
+	// v2 の受信列: 最初の chunk 番号から一切欠番がないこと（旧バグ(1)）。
+	// 途中で read error にならないこと（旧バグ(2)）。
+	var got []byte
+	for len(got) < 40*13 { // 40 chunk 分
+		_ = v2.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := v2.Read(buf)
+		if n > 0 {
+			got = append(got, buf[:n]...)
+		}
+		if err != nil {
+			t.Fatalf("v2 が takeover 後に切断された（旧バグ(2)）: err=%v 受信=%dB %q",
+				err, len(got), got)
+		}
+	}
+	re := regexp.MustCompile(`CHUNK-(\d{6})\|`)
+	ms := re.FindAllStringSubmatch(string(got), -1)
+	if len(ms) < 30 {
+		t.Fatalf("v2 受信不足: %d chunks (%dB)", len(ms), len(got))
+	}
+	first, _ := strconv.Atoi(ms[0][1])
+	for k, m := range ms {
+		n, _ := strconv.Atoi(m[1])
+		if n != first+k {
+			t.Fatalf("v2 stream に欠番（旧バグ(1) chunk 奪い合い）: %d 番目 want CHUNK-%06d got CHUNK-%06d",
+				k, first+k, n)
+		}
+	}
+	if e := srcErr.Load(); e != nil {
+		t.Fatalf("takeover で source が切断された（旧バグ(2)）: %v", e)
+	}
+
+	// 旧 viewer は takeover で relay 側から閉じられている
+	_ = v1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	deadlineV1 := time.Now().Add(3 * time.Second)
+	closed := false
+	for time.Now().Before(deadlineV1) {
+		if _, err := v1.Read(buf); err != nil {
+			closed = true
+			break
+		}
+	}
+	if !closed {
+		t.Fatal("旧 viewer が takeover 後も生きている（chunk 奪い合いが続く）")
+	}
+
+	// 従来 semantics の回帰確認: 現役 viewer が本当に死ねば source も畳む
+	v2.Close()
+	dl := time.Now().Add(5 * time.Second)
+	for srcErr.Load() == nil && time.Now().Before(dl) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if srcErr.Load() == nil {
+		t.Fatal("現役 viewer 死で source が畳まれない（従来 semantics 破壊）")
 	}
 }

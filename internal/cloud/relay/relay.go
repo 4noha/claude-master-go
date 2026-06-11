@@ -36,7 +36,9 @@ type Server struct {
 type sess struct {
 	source net.Conn
 	viewer net.Conn
-	done   chan struct{}
+	// change は slot 変化（接続/置換/解放）の broadcast。変化のたびに
+	// close して張り替える。相手待ちの読み手はこれで起きて現況を再評価。
+	change chan struct{}
 }
 
 func NewServer() *Server { return &Server{sessions: map[string]*sess{}} }
@@ -73,37 +75,126 @@ func (s *Server) Accept(w http.ResponseWriter, r *http.Request, sid, role string
 	s.serve(sid, role, nc)
 }
 
+// serve は nc を sid の role slot に登録し、**nc の唯一の読み手**として
+// 「その瞬間の現役の相手 slot」へ転送する。conn ごとに読み手が 1 つ＝
+// 再接続（タブ再読込・コンソール切替・agent 再接続）で旧 conn の pump と
+// chunk を奪い合う構造を持たない（旧実装は slot を黙って上書きして第 2
+// pump を並走させ、①同じ source を 2 つの io.Copy が read して新 viewer
+// の stream に歯抜け＝frame 中間欠落＝表示破壊 ②旧 pump 終了時に現役
+// conn まで close ③双方の pump が close(done) を呼び panic、を起こした
+// — 2026-06-11 実報告「Web の表示が壊れる」の真因）。
+//
+// 置換時は旧 conn を close するだけ。旧 conn の読み手は read error で
+// 退出し、自分が現役でないことを確認して**相手側には波及させない**。
+// 現役のままの自然死だけが従来 semantics（どちらか死で両方を畳む＝
+// viewer 死で source も切れ agent が次の wake まで解放）を実行する。
 func (s *Server) serve(sid, role string, nc net.Conn) {
 	s.mu.Lock()
 	se := s.sessions[sid]
 	if se == nil {
-		se = &sess{done: make(chan struct{})}
+		se = &sess{change: make(chan struct{})}
 		s.sessions[sid] = se
 	}
+	var old net.Conn
 	if role == "source" {
-		se.source = nc
+		old, se.source = se.source, nc
 	} else {
-		se.viewer = nc
+		old, se.viewer = se.viewer, nc
 	}
-	both := se.source != nil && se.viewer != nil
+	close(se.change) // slot 変化を相手待ちへ broadcast
+	se.change = make(chan struct{})
 	s.mu.Unlock()
+	if old != nil {
+		old.Close() // 置換: 旧 conn の読み手は read error で退出する
+	}
 
-	if both {
-		pump(se.source, se.viewer) // どちらか EOF までブロック
-		close(se.done)
+	// 相手が 2 分以内に来なければ自 conn を畳む（従来の先着失効
+	// semantics。読み手が nc.Read でブロックしたままでも解放される）。
+	loneTimer := time.AfterFunc(2*time.Minute, func() {
 		s.mu.Lock()
-		delete(s.sessions, sid)
+		lone := s.sessions[sid] == se && s.isCurrentLocked(se, role, nc) &&
+			(role == "source" && se.viewer == nil ||
+				role == "viewer" && se.source == nil)
 		s.mu.Unlock()
-		se.source.Close()
-		se.viewer.Close()
-		return
+		if lone {
+			nc.Close()
+		}
+	})
+	defer loneTimer.Stop()
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := nc.Read(buf)
+		if n > 0 {
+			if !s.writePeer(sid, se, role, nc, buf[:n]) {
+				break // 置換された／相手が来ない／相手書込不能
+			}
+		}
+		if rerr != nil {
+			break
+		}
 	}
-	// 相手待ち（先着側）。相手到着で pump 完了＝done、無ければ失効。
-	select {
-	case <-se.done:
-	case <-time.After(2 * time.Minute):
+
+	// 退出: 現役のままの自然死なら相手も畳んで session を解放。置換済み
+	// なら何もしない（新 conn が引き継いでいる）。
+	s.mu.Lock()
+	var peer net.Conn
+	if s.sessions[sid] == se && s.isCurrentLocked(se, role, nc) {
+		if role == "source" {
+			peer = se.viewer
+		} else {
+			peer = se.source
+		}
+		delete(s.sessions, sid)
+		close(se.change) // 相手待ちを起こして現況再評価させる
+		se.change = make(chan struct{})
 	}
+	s.mu.Unlock()
 	nc.Close()
+	if peer != nil {
+		peer.Close()
+	}
+}
+
+// isCurrentLocked は nc がまだ role slot の現役か（要 s.mu）。
+func (s *Server) isCurrentLocked(se *sess, role string, nc net.Conn) bool {
+	if role == "source" {
+		return se.source == nc
+	}
+	return se.viewer == nc
+}
+
+// writePeer は相手 slot の現役 conn へ p を書く。相手不在なら到着を最大
+// 2 分待つ（従来の先着待ち semantics）。false は「読み手は退出せよ」:
+// 自分が置換された／相手が来ない／相手への書込が失敗（相手の読み手が
+// 畳む。自分も従来 semantics どおり終了）。
+func (s *Server) writePeer(sid string, se *sess, role string, nc net.Conn, p []byte) bool {
+	deadline := time.NewTimer(2 * time.Minute)
+	defer deadline.Stop()
+	for {
+		s.mu.Lock()
+		if s.sessions[sid] != se || !s.isCurrentLocked(se, role, nc) {
+			s.mu.Unlock()
+			return false // 置換された: 新 conn が現役。黙って退出
+		}
+		var peer net.Conn
+		if role == "source" {
+			peer = se.viewer
+		} else {
+			peer = se.source
+		}
+		ch := se.change
+		s.mu.Unlock()
+		if peer != nil {
+			_, err := peer.Write(p)
+			return err == nil
+		}
+		select {
+		case <-ch: // slot 変化 → 再評価
+		case <-deadline.C:
+			return false
+		}
+	}
 }
 
 // pump は a⇄b をバイト透過で双方向中継。片方が閉じたら戻る。
