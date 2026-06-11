@@ -339,6 +339,23 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   - HOST_FLOW_SCROLLBACK は実 Claude で構造的に不完全（Python 既知制約）
     のため Go へは未移植（SESSION_LOG で代替＝描画非依存で安全）。
 
+## 一層目ダブルバッファ（v0.3.1・claude の DECSET 2026 honor）
+
+- **実 claude は再描画を ?2026h..?2026l で括る**（実録画 90KB 中 35 対・
+  最大 73KB）。proxy はこれを frame 放送の保留判定に使う: `vt.go` が
+  2026 を状態追跡（セル非影響は不変）、`server.go masterPump` が
+  **SyncActive 中は放送保留・ESU を含む read で完成状態を 1 frame**。
+  「チカチカは消えたが再描画ブロックが見える」（2026-06-11 実報告）の
+  根本対応＝転送のアトミック性に加え**意味のアトミック性**を獲得。
+- 安全弁 3 つ: ①ESU 無しで 1s 超→read 毎放送に復帰 ②read も無い停止
+  → AfterFunc タイマーで 1 度放送 ③master EOF→保留 flush して停止。
+  RESIZE/SCROLL/attach catch-up は非ゲート（即応・次 ESU で収束）。
+- 回帰: `syncgate_test.go`（実録画の実 sync 区間を実 PTY 分割供給・
+  旧コード FAIL 確認済）/`TestVTSyncActiveTracking`。録画末尾が BSU で
+  閉じない（実録画がそう）ケースは EOF flush/valve が担保。
+- ⚠バイナリはプロセス起動時のみ反映＝**各セッションは proxy 再起動で
+  初めて v0.3.1**（Web 再起動ボタン or restart-proxy）。
+
 ## C 案完全自動化スタック（v0.2.1+・本 PC 稼働中）
 
 VSCode タブが crash/閉じ で死んでも会話を保つ仕組み。**proxy は
