@@ -291,6 +291,29 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     DECSET 2026 非対応のまま＝sync.js の 1 emit=1 frame が原子性の砦
     （xterm.js `_innerWrite` は chunk 単位同期 parse＝1 write 内は
     paint 不可と minified 実コードで確認済）。
+  - **M9 Web Firestore 更新 push ✅（2026-06-11・rev 00034）**: quiescence
+    切断（無通信 30s・near-$0 設計）後の Web を**ネイティブ
+    WatchSessions と同型の push で自動復帰**させる。relay `/api/fbtoken`
+    （owner cookie 必須）が SA 鍵（ENROLL_SA_JSON_B64 既存）署名の
+    Firebase custom token を発行＝**identity は全端末共通 uid=cm-owner**
+    （単一オーナー設計・SA 鍵は渡さない）。term.js が
+    `pcs/{pc}/sessions/{sid}` を onSnapshot し、status 変化（is_active
+    等＝content_hash ゲート）で切断中なら自動再接続（純関数
+    `cmReconnectGate`: CONNECTING/OPEN 中は張らない・1s×2^n backoff
+    上限 30s）。キー/画像入力も queue→再接続で送出＝タイプで線が開く。
+    アイドル中は接続ゼロ＝Cloud Run 温まらない（near-$0 不変）。
+    **GCP 一回設定済**: Firebase 有効化・Web アプリ登録（公開 apiKey）・
+    Identity Toolkit initializeAuth・firestore.rules v2 release
+    （cm-owner=pcs/** read-only・他全拒否。サーバ SDK は rules 非対象＝
+    ネイティブ同期無影響。deploy は firebaserules REST）。relay env に
+    `FIREBASE_WEB_CONFIG_B64`（公開 config JSON の b64。未設定なら
+    /api/fbtoken 404＝push 無し従来動作）。検証: 実 RSA 鍵 mint→RS256
+    機械検証／実 Identity Toolkit 交換→実 Firestore rules read 許可・
+    write 拒否・pcs 外拒否（`-tags manual` `TestFBTokenRealExchange
+    AndRules`、要 FIREBASE_API_KEY）／gate は出荷 term.js 抽出の
+    `reconnectgate_test.mjs`。⚠sync シムは**接続ごとに新規**＋全 WS
+    ハンドラに現役 identity ガード（旧 conn の遅延イベント遮断＝relay
+    takeover 修正と同じ規律のブラウザ版）。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
