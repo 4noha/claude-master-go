@@ -34,6 +34,44 @@ var (
 	pgDn      = []byte("\x1b[6~")
 )
 
+// navReminder は nav-mode 中に非スクロールキーを握り潰した時、banner を
+// throttled 再表示する。nav-mode の握り潰しは仕様 (Python parity) だが、
+// toggle 時の 1 度きりの banner は claude streaming に流されて見逃され
+// やすく、「タイプしても無反応＝壊れた」と誤認した user が窓を手動 kill
+// する実害連鎖 (2026-06-05・CLAUDE.md「tmux 経路の既知制約」③) が出た。
+// 転送挙動 (握り潰し) は不変・feedback だけ追加＝parity 維持。
+type navReminder struct {
+	mu       sync.Mutex
+	last     time.Time
+	out      io.Writer
+	interval time.Duration
+}
+
+// navRemind は production 既定 (stdout・2s throttle)。テストは fields を
+// 差し替える (パッケージ内 seam)。
+var navRemind = &navReminder{out: os.Stdout, interval: 2 * time.Second}
+
+// remind は throttle を通れば banner を再表示する。連打/長押しでも
+// interval に 1 回まで＝spam しない。
+func (n *navReminder) remind() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	now := time.Now()
+	if now.Sub(n.last) < n.interval {
+		return
+	}
+	n.last = now
+	_, _ = n.out.Write(navOnMsg)
+}
+
+// markShown は banner を直接出した直後 (toggle ON) に throttle 起点を
+// 更新する＝toggle 直後の連続 remind を防ぐ。
+func (n *navReminder) markShown() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.last = time.Now()
+}
+
 // connW は sock 書き込みを直列化（SIGWINCH ハンドラと主ループが同時に
 // 書いてもフレーム（RESIZE/SCROLL マジック）が崩れない。Python は
 // signal 割り込みで同等の競合があるが Go では明示直列化＝堅牢化。
@@ -265,6 +303,7 @@ func processStdin(w *connW, cfg *config.Config, keys map[string]int,
 		*navMode = !*navMode
 		if *navMode {
 			_, _ = os.Stdout.Write(navOnMsg)
+			navRemind.markShown()
 		} else {
 			_, _ = os.Stdout.Write(navOffMsg)
 			*pkScrolled = false
@@ -286,6 +325,13 @@ func processStdin(w *connW, cfg *config.Config, keys map[string]int,
 			if e := w.sendScroll(dy); e != nil {
 				return false, e
 			}
+		} else if screen.IsLiveResetKey(data) {
+			// 実ユーザーキーを握り潰した＝「無反応」と誤認されやすい
+			// 瞬間。banner を throttled 再表示して nav-mode 中である
+			// ことを伝える (握り潰し挙動自体は不変＝parity 維持)。
+			// passive レポート (focus/mouse 応答) では出さない
+			// (IsLiveResetKey が実操作のみ true)。
+			navRemind.remind()
 		}
 		return false, nil
 	}

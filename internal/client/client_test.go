@@ -274,3 +274,75 @@ func TestConnectRetryThenSucceedRealSocket(t *testing.T) {
 	}
 	c.Close()
 }
+
+// nav-mode 中に実ユーザーキーを握り潰した時、banner を throttled 再表示
+// する (「無反応＝壊れた」誤認→窓 kill 連鎖の根絶・2026-06-05 実害)。
+// 握り潰し挙動自体 (claude へ送らない) は不変＝Python parity 維持。
+func TestNavModeSwallowedKeyRemindsBannerThrottled(t *testing.T) {
+	cfg := cliCfg()
+	keys := scrollKeys(cfg)
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+	go func() { b := make([]byte, 4096); for { if _, e := srv.Read(b); e != nil { return } } }() // 書込を吸う
+	w := &connW{c: cli}
+
+	var buf strings.Builder
+	oldOut, oldLast, oldInt := navRemind.out, navRemind.last, navRemind.interval
+	navRemind.out = &buf
+	navRemind.last = time.Time{} // throttle 起点リセット
+	navRemind.interval = 2 * time.Second
+	defer func() {
+		navRemind.out, navRemind.last, navRemind.interval = oldOut, oldLast, oldInt
+	}()
+
+	nav, pk := true, false
+	// 1) 実ユーザーキー "x" 握り潰し → banner 出る
+	if _, e := processStdin(w, cfg, keys, cfg.NavKey, []byte("x"), &nav, &pk); e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(buf.String(), "NAV MODE ON") {
+		t.Fatalf("swallowed key で banner が出ない: %q", buf.String())
+	}
+	first := buf.Len()
+
+	// 2) 直後の連打 → throttle (2s) 内なので出ない
+	if _, e := processStdin(w, cfg, keys, cfg.NavKey, []byte("y"), &nav, &pk); e != nil {
+		t.Fatal(e)
+	}
+	if buf.Len() != first {
+		t.Fatalf("throttle 内なのに再表示された: %d → %d", first, buf.Len())
+	}
+
+	// 3) throttle 経過後 → 再表示
+	navRemind.mu.Lock()
+	navRemind.last = time.Now().Add(-3 * time.Second)
+	navRemind.mu.Unlock()
+	if _, e := processStdin(w, cfg, keys, cfg.NavKey, []byte("z"), &nav, &pk); e != nil {
+		t.Fatal(e)
+	}
+	if buf.Len() <= first {
+		t.Fatal("throttle 経過後に再表示されない")
+	}
+
+	// 4) passive レポート (focus in \x1b[I) では出ない
+	before := buf.Len()
+	if _, e := processStdin(w, cfg, keys, cfg.NavKey, []byte("\x1b[I"), &nav, &pk); e != nil {
+		t.Fatal(e)
+	}
+	if buf.Len() != before {
+		t.Fatal("passive レポートで banner が出た (IsLiveResetKey 違反)")
+	}
+
+	// 5) スクロールキー (j) では出ない (視覚 feedback は pan 自体)
+	navRemind.mu.Lock()
+	navRemind.last = time.Time{}
+	navRemind.mu.Unlock()
+	before = buf.Len()
+	if _, e := processStdin(w, cfg, keys, cfg.NavKey, []byte("j"), &nav, &pk); e != nil {
+		t.Fatal(e)
+	}
+	if buf.Len() != before {
+		t.Fatal("スクロールキーで banner が出た")
+	}
+}
