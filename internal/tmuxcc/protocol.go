@@ -45,8 +45,13 @@ func (*OutputMsg) msg() {}
 type BeginMsg struct{ Time, Num, Flags string }
 type EndMsg struct{ Time, Num, Flags string }
 
+// ErrorMsg: %error <time> <num> <flags> — コマンド失敗時の応答終端
+// (%end の error 版)。
+type ErrorMsg struct{ Time, Num, Flags string }
+
 func (*BeginMsg) msg() {}
 func (*EndMsg) msg()   {}
+func (*ErrorMsg) msg() {}
 
 // SessionChangedMsg: %session-changed $<id> <name>
 type SessionChangedMsg struct {
@@ -152,6 +157,19 @@ func ParseLine(line string) (Msg, error) {
 	case "%end":
 		f := strings.Fields(rest)
 		m := &EndMsg{}
+		if len(f) > 0 {
+			m.Time = f[0]
+		}
+		if len(f) > 1 {
+			m.Num = f[1]
+		}
+		if len(f) > 2 {
+			m.Flags = f[2]
+		}
+		return m, nil
+	case "%error":
+		f := strings.Fields(rest)
+		m := &ErrorMsg{}
 		if len(f) > 0 {
 			m.Time = f[0]
 		}

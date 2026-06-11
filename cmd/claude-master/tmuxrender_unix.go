@@ -231,6 +231,10 @@ func queryLines(cli *tmuxcc.Client, cmd string, timeout time.Duration) []string 
 				if began {
 					return lines
 				}
+			case *tmuxcc.ErrorMsg:
+				if began {
+					return lines
+				}
 			}
 		case <-deadline:
 			return lines

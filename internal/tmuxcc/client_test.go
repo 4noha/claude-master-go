@@ -158,3 +158,77 @@ func TestClient_SendCommand(t *testing.T) {
 	}
 	t.Log("PING echo received via output msg")
 }
+
+// TestClient_QueryReplyWithPercentLine: display-message の応答が "%5" の
+// ような % 始まり行でも ReplyLineMsg として届く (応答 block 内は全行が
+// 本文)。「active pane の取得に失敗します」の実報告を再現する回帰テスト
+// (旧コードは OtherMsg に誤分類して応答が空になった)。
+func TestClient_QueryReplyWithPercentLine(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not installed: %v", err)
+	}
+	sock := "cmtmuxcc-test3"
+	cleanup := func() {
+		_ = exec.Command("tmux", "-L", sock, "kill-server").Run()
+	}
+	cleanup()
+	defer cleanup()
+
+	if err := exec.Command("tmux", "-L", sock,
+		"new-session", "-d", "-s", "s", "-x", "80", "-y", "24", "cat",
+	).Run(); err != nil {
+		t.Fatalf("new-session: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	c, err := Start(StartOpts{Socket: sock, Session: "s", Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Close()
+
+	// handshake 待ち
+	for {
+		msg, ok := <-c.Events
+		if !ok {
+			t.Fatal("closed before handshake")
+		}
+		if _, yes := msg.(*SessionChangedMsg); yes {
+			break
+		}
+	}
+
+	if err := c.Send("display-message -p '#{pane_id}'"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	began := false
+	var got string
+	for got == "" {
+		select {
+		case msg, ok := <-c.Events:
+			if !ok {
+				t.Fatal("closed")
+			}
+			switch m := msg.(type) {
+			case *BeginMsg:
+				began = true
+			case *ReplyLineMsg:
+				if began {
+					got = m.Text
+				}
+			case *EndMsg:
+				if began && got == "" {
+					t.Fatal("reply block 終了したが ReplyLineMsg が来ない (旧 bug)")
+				}
+			}
+		case <-deadline:
+			t.Fatal("reply timeout")
+		}
+	}
+	if got == "" || got[0] != '%' {
+		t.Fatalf("pane id 形式でない: %q", got)
+	}
+	t.Logf("pane id reply: %s", got)
+}

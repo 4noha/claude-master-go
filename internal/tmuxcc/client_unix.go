@@ -94,23 +94,36 @@ func (c *Client) readLoop() {
 		close(c.Events)
 	}()
 	br := bufio.NewReader(c.ptmx)
+	inReply := false // %begin〜%end/%error の間 = コマンド応答 block
 	for {
 		line, err := br.ReadString('\n')
 		if len(line) > 0 {
 			msg, perr := ParseLine(line)
-			if perr != nil {
+			switch {
+			case perr != nil:
 				// parse error はログ相当 (将来 channel 経由 propagate)
 				// 今は raw として OtherMsg 化
 				c.Events <- &OtherMsg{Type: "%PARSE-ERR", Rest: perr.Error()}
-			} else if msg != nil {
-				c.Events <- msg
-			} else {
-				// 非 % 行 = %begin/%end 間のコマンド応答本文
-				// (display-message / capture-pane の結果)
-				trimmed := strings.TrimRight(line, "\r\n")
-				if trimmed != "" {
+			case inReply:
+				// 応答 block 内は **全行が応答本文** (pane id "%5" の
+				// ような % 始まり行も制御メッセージではなく出力。
+				// tmux は block 内に通知を interleave しない)。
+				// 終端 (%end / %error) だけは制御として扱う。
+				switch msg.(type) {
+				case *EndMsg, *ErrorMsg:
+					inReply = false
+					c.Events <- msg
+				default:
+					trimmed := strings.TrimRight(line, "\r\n")
 					c.Events <- &ReplyLineMsg{Text: trimmed}
 				}
+			case msg != nil:
+				if _, ok := msg.(*BeginMsg); ok {
+					inReply = true
+				}
+				c.Events <- msg
+			default:
+				// block 外の非 % 行 (通常出ない) は黙殺
 			}
 		}
 		if err != nil {
