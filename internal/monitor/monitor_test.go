@@ -9,11 +9,13 @@ package monitor
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -427,4 +429,75 @@ func windowExists(mgr *tmux.Manager, name string) bool {
 		}
 	}
 	return false
+}
+
+// RunLoop 回帰: scan エラー tick で STATUS_FILE を空 sessions で全置換
+// したり既存窓を RemoveWindow したりしない（エラー tick は skip＝前回
+// 状態維持）。2026-06-12 実害: launchd ProcessType=Background の QoS
+// throttle で daemon 子の `ps aux` が 10s timeout に頻繁に殺され、
+// エラー握り潰し→空 STATUS flap→start 30s timeout→失敗ごとに同 UUID
+// dup proxy が残置され scan 負荷増→さらに flap、の正帰還が成立した。
+// scan エラーは seam（scanSessions）で注入する（実 ps を決定論的に
+// 落とす手段が無いため。tmux は実サーバ＝既存テストと同じ規律）。
+func TestRunLoopScanErrorKeepsStatusAndWindows(t *testing.T) {
+	cfg := testCfg(t)
+	mgr, done := testMgr(t, cfg)
+	defer done()
+	if err := os.MkdirAll(cfg.SessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := scanner.ClaudeSession{Pid: os.Getpid(),
+		Cwd: "/tmp/cm-scanerr-test", SessionID: "scanerr-test-uuid",
+		StartTime: "0:00AM"}
+	// managedOnly が要求する <pid>.sock（os.Stat のみ＝ファイルで足る）
+	if err := os.WriteFile(filepath.Join(cfg.SessionsDir,
+		strconv.Itoa(fake.Pid)+".sock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var scanErr atomic.Bool // false=fake を返す / true=エラーを返す
+	scanSessions = func(includeVSCode bool) ([]scanner.ClaudeSession, error) {
+		if scanErr.Load() {
+			return nil, errors.New("ps timeout (injected)")
+		}
+		return []scanner.ClaudeSession{fake}, nil
+	}
+	defer func() { scanSessions = scanner.Scan }()
+
+	stop := make(chan struct{})
+	finished := make(chan struct{})
+	go func() { RunLoop(cfg, mgr, stop); close(finished) }()
+
+	// phase1: fake session が STATUS と窓 map に載るまで待つ
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("fake session が STATUS に載らない")
+		}
+		b, _ := os.ReadFile(cfg.StatusFile)
+		if strings.Contains(string(b), fake.SessionID) &&
+			mgr.WindowFor(fake.Key()) != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// phase2: scan を恒常エラー化 → 2 tick 以上回す（interval=1s）
+	scanErr.Store(true)
+	time.Sleep(2500 * time.Millisecond)
+
+	close(stop)
+	<-finished
+
+	b, err := os.ReadFile(cfg.StatusFile)
+	if err != nil {
+		t.Fatalf("STATUS 読めない: %v", err)
+	}
+	if !strings.Contains(string(b), fake.SessionID) {
+		t.Fatalf("scan エラー tick で STATUS が空に全置換された:\n%s", b)
+	}
+	if mgr.WindowFor(fake.Key()) == "" {
+		t.Fatal("scan エラー tick で窓 map から RemoveWindow された")
+	}
 }

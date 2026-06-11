@@ -37,7 +37,13 @@ import (
 	"github.com/4noha/claude-master-go/internal/client"
 	"github.com/4noha/claude-master-go/internal/cloud/agent"
 	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/scanner"
 )
+
+// startScanSessions は scanner.Scan の seam（findLiveManagedByUUID の
+// テストで結果/エラーを注入する。scanner 自体は実 ps/lsof・実 CIM の
+// 既存テストが担保）。
+var startScanSessions = scanner.Scan
 
 // runStart: claude-master start [args...]
 func runStart(args []string) {
@@ -118,6 +124,17 @@ func runStart(args []string) {
 	projectsRoot := filepath.Join(home, ".claude", "projects")
 	spawnArgs, resumedUUID := resolveResumeArgs(args, cwd, projectsRoot)
 	if resumedUUID != "" {
+		// dup 防止 backstop（STATUS_FILE 非依存）: 同 UUID を resume 中の
+		// live proxy が既に居れば spawn せず attach。STATUS が一時空
+		// （monitor 不調・scan 失敗）だと cwd 一致を見落として同一会話へ
+		// 二重 resume spawn し、失敗のたびに dup proxy が増えて scan 負荷
+		// →さらに STATUS 劣化、の正帰還が成立する（2026-06-12 実害）。
+		if pid, ok := findLiveManagedByUUID(cfg, resumedUUID); ok {
+			fmt.Fprintf(os.Stderr,
+				"claude-master: %s は live proxy あり（claude pid=%d）＝新規 spawn せず attach\n",
+				resumedUUID, pid)
+			attachLiveUUIDAndExit(cfg, pid, resumedUUID)
+		}
 		fmt.Fprintf(os.Stderr,
 			"claude-master: cwd の既存会話 %s を resume\n", resumedUUID)
 	}
@@ -131,9 +148,21 @@ func runStart(args []string) {
 	//    monitor scan→STATUS_FILE 更新の連鎖は通常数秒で完了）。
 	key := waitKeyForCwd(cfg.StatusFile, cwd, 30*time.Second)
 	if key == "" {
+		// STATUS 反映 timeout でも spawn 自体は成功している事が多い
+		// （monitor 不調/scan 遅延）。UUID resume なら sock を直接探して
+		// attach＝spawn 済み proxy を孤児（dup の種）にしない。
+		if resumedUUID != "" {
+			if pid, ok := findLiveManagedByUUID(cfg, resumedUUID); ok {
+				fmt.Fprintf(os.Stderr,
+					"claude-master: STATUS 未反映だが spawn 済み proxy を検出（claude pid=%d）＝"+
+						"直接 attach。monitor の状態を確認してください（~/.claude-master.log）\n", pid)
+				attachLiveUUIDAndExit(cfg, pid, resumedUUID)
+			}
+		}
 		fmt.Fprintln(os.Stderr,
-			"start: 30s 待っても session が STATUS_FILE に出ない（spawn 失敗 or "+
-				"monitor 未稼働）。手動で `claude-master attach <key>` してください。")
+			"start: 30s 待っても session が STATUS_FILE に出ない（spawn 失敗の可能性）。"+
+				"`claude-master sessions` で proxy 生存を確認し、`claude-master attach <key>` "+
+				"または ~/.claude-master.log（monitor）を確認してください。")
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "claude-master: セッション %s に接続\n", key)
@@ -146,6 +175,41 @@ func attachAndExit(key string, cfg *config.Config) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// findLiveManagedByUUID は STATUS_FILE **非依存**で「<uuid> を resume 中の
+// 管理下 live セッション（<pid>.sock あり）」を探す。scanner.Scan は
+// OS-split 済（unix=ps/lsof・windows=CIM）＝両 OS で動く。scan エラーは
+// 不検出扱い（呼び元が従来経路へ安全 fallback）。
+func findLiveManagedByUUID(cfg *config.Config, uuid string) (int, bool) {
+	if uuid == "" {
+		return 0, false
+	}
+	ss, err := startScanSessions(false)
+	if err != nil {
+		return 0, false
+	}
+	for _, s := range ss {
+		if s.SessionID != uuid {
+			continue
+		}
+		sock := filepath.Join(cfg.SessionsDir, strconv.Itoa(s.Pid)+".sock")
+		if _, err := os.Stat(sock); err == nil {
+			return s.Pid, true
+		}
+	}
+	return 0, false
+}
+
+// attachLiveUUIDAndExit は backstop で見つけた live セッションへ attach。
+// まず sock 直接（STATUS 非依存＝monitor 不調でも繋がる）、sock が死んで
+// いたら（restart-proxy 等）key 再解決の RunByKey へ fallback。
+func attachLiveUUIDAndExit(cfg *config.Config, pid int, uuid string) {
+	sock := filepath.Join(cfg.SessionsDir, strconv.Itoa(pid)+".sock")
+	if err := client.Run(sock, true, cfg); err == nil {
+		os.Exit(0)
+	}
+	attachAndExit(uuid, cfg)
 }
 
 // resolveResumeArgs は新規 spawn 時の args を決定する。args 空（= shim

@@ -4,11 +4,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/4noha/claude-master-go/internal/config"
+	"github.com/4noha/claude-master-go/internal/scanner"
 )
 
 // findLiveKeyByCwd の挙動: cwd 一致の最新 updated_at セッション key を返す。
@@ -340,5 +344,50 @@ func TestPickSubtreeCandidate(t *testing.T) {
 		if got != c.want {
 			t.Fatalf("pickSubtreeCandidate(%q, %d) = %d want %d", c.in, c.count, got, c.want)
 		}
+	}
+}
+
+// findLiveManagedByUUID: STATUS_FILE 非依存の dup 防止 backstop。
+// 「UUID 一致 かつ <pid>.sock あり」のみ live 扱い。scan エラーは不検出
+// （呼び元が従来 spawn 経路へ安全 fallback）。scanner 自体は実 ps/lsof
+// の既存テストが担保＝ここは選別ロジックを seam 注入で検証。
+func TestFindLiveManagedByUUID(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := &config.Config{SessionsDir: tmp}
+	orig := startScanSessions
+	defer func() { startScanSessions = orig }()
+
+	startScanSessions = func(bool) ([]scanner.ClaudeSession, error) {
+		return []scanner.ClaudeSession{
+			{Pid: 111, SessionID: "uuid-no-sock"},
+			{Pid: 222, SessionID: "uuid-with-sock"},
+		}, nil
+	}
+
+	// sock 無し → 不検出（素 claude / 死んだ proxy を live 扱いしない）
+	if _, ok := findLiveManagedByUUID(cfg, "uuid-no-sock"); ok {
+		t.Fatal("sock 無しの session を live 扱いした")
+	}
+	// sock あり → 検出
+	if err := os.WriteFile(filepath.Join(tmp, "222.sock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pid, ok := findLiveManagedByUUID(cfg, "uuid-with-sock")
+	if !ok || pid != 222 {
+		t.Fatalf("live session 検出失敗: pid=%d ok=%v", pid, ok)
+	}
+	// 不一致 UUID / 空 UUID → 不検出
+	if _, ok := findLiveManagedByUUID(cfg, "uuid-unknown"); ok {
+		t.Fatal("無関係 UUID を検出した")
+	}
+	if _, ok := findLiveManagedByUUID(cfg, ""); ok {
+		t.Fatal("空 UUID を検出した")
+	}
+	// scan エラー → 不検出（spawn 経路へ fallback）
+	startScanSessions = func(bool) ([]scanner.ClaudeSession, error) {
+		return nil, errors.New("ps timeout (injected)")
+	}
+	if _, ok := findLiveManagedByUUID(cfg, "uuid-with-sock"); ok {
+		t.Fatal("scan エラー時に live 扱いした")
 	}
 }

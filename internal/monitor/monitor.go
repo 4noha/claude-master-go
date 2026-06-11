@@ -25,6 +25,10 @@ func sockPathFor(cfg *config.Config, pid int) string {
 	return filepath.Join(cfg.SessionsDir, strconv.Itoa(pid)+".sock")
 }
 
+// scanSessions は scanner.Scan の seam。RunLoop の scan エラー経路は
+// 実 ps を決定論的に落とせないためテストはここでエラーを注入する。
+var scanSessions = scanner.Scan
+
 // readSessionStatus は proxy が書く <pid>.status.json（M5e）を読む。
 // 未存在/不正は空（Python _read_session_status と同一）。
 func readSessionStatus(cfg *config.Config, pid int) map[string]any {
@@ -69,7 +73,14 @@ func WriteStatus(cfg *config.Config, mgr *tmux.Manager, sessions []scanner.Claud
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfg.StatusFile, b, 0o644)
+	// tmp→rename（statuswriter と同じ規律）。truncate 直書きだと読者
+	// （start/attach/dashboard/cloud agent）が 0B/部分 JSON を読み得る
+	// （2026-06-12 に size 0 の瞬間を実観測）。
+	tmp := cfg.StatusFile + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, cfg.StatusFile)
 }
 
 // managedOnly は claude-master の proxy 経由で起動したセッション
@@ -238,7 +249,21 @@ func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 		interval = time.Second
 	}
 	for {
-		sessions, _ := scanner.Scan(false)
+		sessions, err := scanSessions(false)
+		if err != nil {
+			// scan 失敗 tick は skip＝前回状態維持。エラーを「セッション
+			// ゼロ」と同一視すると、ps の一時失敗だけで STATUS 空置換＋
+			// 全窓 Remove が走り、start の cwd 解決と attach の key 解決が
+			// 同時崩壊する（2026-06-12 実害: Background QoS throttle 下で
+			// ps aux が 10s timeout に頻発→空 STATUS flap→dup proxy 増殖）。
+			fmt.Printf("[scan] エラー（tick skip・前回状態維持）: %v\n", err)
+			select {
+			case <-done:
+				return
+			case <-time.After(interval):
+			}
+			continue
+		}
 		sessions = managedOnly(cfg, sessions) // 管理外 claude はタブ非生成
 		current := map[string]scanner.ClaudeSession{}
 		for _, s := range sessions {

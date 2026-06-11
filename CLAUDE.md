@@ -404,6 +404,58 @@ client だけ foreground で走る。**proxy 自身は self-update 反映の
   <ts>-sig-user_defined_signal_1.dump`）。stuck proxy 診断で
   「Accept loop alive？master pump 待ち？」を**生体のまま**確認可能。
 
+## STATUS flap / start 30s timeout（2026-06-12 解決済）
+
+- **症状**: `claude`（start 経由）のセッション復元が「start: 30s 待っても
+  session が STATUS_FILE に出ない」で失敗、開発が進むごとに悪化。
+- **真因連鎖（read-only 調査→懐疑検証 2 レンズで実測確定）**: launchd
+  plist の `ProcessType=Background` → monitor と exec 子が pri=4（通常
+  31）に throttle → 子 `ps aux` が 8-12s（前面 0.29s・`taskpolicy -b`
+  再現 77.9s）→ `scanner_unix.go` の 10s timeout を確率超過 → RunLoop が
+  エラー握り潰し**空 sessions で STATUS 全置換**（59B flap・観測窓の
+  76% が空・最長連続 50s）→ start の `waitKeyForCwd`（cwd 文字列一致
+  のみ・500ms poll）が 30s 窓に非空書込ゼロで timeout。**正帰還×2**:
+  ① start は spawn が wait より先＝失敗 exit で同 UUID dup proxy が残置
+  （実測 sock 12→15/1h・UUID 4728811a×4 等・claude 計 16 本）→ scan N
+  増（throttle 下 lsof 2-6s/件）→ tick 11→34→100s ペースへ悪化
+  ② launchd Program が repo build 成果物そのもの → `make build` の
+  in-place 上書きで稼働 daemon が OS_REASON_CODESIGNING SIGKILL
+  （launchctl runs=12）→ KeepAlive 再起動 churn・旧 inode 常駐混在。
+- **反証済（誤診注意）**: /Volumes デッドマウントで lsof 張り付き説
+  （前面 0.07s/件＝QoS が真因）／dup UUID で待ち永久不成立説（判定は
+  cwd 一致＝非空 STATUS 1 回で成立）／「monitor 未稼働」説（稼働した
+  上で空を書いていた）／59B=破断読み説（正規の空 JSON 書込）／idle-gc
+  PID 再利用で monitor 自殺説（ログに痕跡ゼロ。`4h0m0s ago` 同値は毎秒
+  sweep の閾値跨ぎ仕様＝正常）。
+- **修正（コード 3 点・回帰テスト付き）**: ① RunLoop の scan エラー
+  tick は **skip＝前回状態維持**（STATUS 全置換も全 RemoveWindow も
+  しない。`TestRunLoopScanErrorKeepsStatusAndWindows`＝旧コード FAIL
+  確認済・seam `scanSessions` でエラー注入） ② `WriteStatus` を
+  tmp→rename 原子化（truncate 直書きの 0B 瞬間を実観測） ③ start に
+  **STATUS 非依存の dup 防止 backstop** `findLiveManagedByUUID`
+  （scanner 直叩き＋`<pid>.sock` 存在で同 UUID live を検出→spawn せず
+  sock 直接 attach→死んでいたら RunByKey fallback。30s timeout 時も
+  同 backstop で spawn 済み proxy へ直接 attach＝孤児/dup の種を残さ
+  ない。`TestFindLiveManagedByUUID`）。
+- **修正（運用 2 点・plist は repo 外）**: ① 両 plist
+  （monitor/cloud）の `ProcessType=Background` 削除（pri 4→20＝前面
+  同等速度。修正後実測: STATUS 7 件安定・更新 1-2s 間隔・空ゼロ）
+  ② launchd Program を `~/.claude-master/bin/claude-master` へ分離＝
+  **開発ビルドが稼働 daemon を SIGKILL しなくなった**。
+- **⚠新・運用手順（重要）**: デーモンへの反映は `make build` だけでは
+  起きなくなった。`rm ~/.claude-master/bin/claude-master && cp
+  claude-master ~/.claude-master/bin/`（**rm→cp＝新 inode 必須**・
+  macOS 署名キャッシュ罠は tmux 差替と同類）→ `launchctl kickstart -k
+  gui/$UID/com.4noha.claude-master`（cloud も同様）。proxy/shim は
+  従来通り＝新規 spawn から新版。
+- 検証: 全 18 pkg `go test` 緑・3-OS build 緑／実 e2e（scratch dir で
+  start）＝spawn→STATUS 登録→「セッション pid-N に接続」が数秒で成立
+  ／dup proxy 8 本整理（UUID 毎 1 本・client 接続中は保持）。
+- 既知 quirk（未対処・実害小）: start の cwd 一致は文字列比較＝symlink
+  経路（`/tmp`→`/private/tmp` 等）は不一致で 30s timeout になる。実
+  プロジェクトの `/Users/...` では非発生。対処するなら EvalSymlinks
+  正規化（scanner は物理 path を返す）。
+
 ## 観測スタック（launchd 化・本 PC 運用）
 
 VSCode crash/terminal SIGHUP 連鎖からの**独立観測**が必要。`~/.claude-
