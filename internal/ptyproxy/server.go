@@ -71,6 +71,9 @@ type Server struct {
 	statusSig   string // 直近 payload の usage+active シグネチャ
 	statusInit  bool   // 初回は必ず書く（Python の None 比較相当）
 	cmVersion   string // この proxy バイナリ版（status.json cm_version）
+	// 一層目ダブルバッファ（claude の DECSET 2026 保留）状態。要 mu。
+	syncStart time.Time   // BSU 観測時刻（ゼロ値=非 sync）
+	syncTimer *time.Timer // 安全弁（read 無しでも syncHoldMax で放送）
 	done     chan struct{}
 	doneOnce sync.Once
 	// setClip は画像をこのホストの OS クリップボードへ載せる（差し替え
@@ -182,6 +185,22 @@ func (s *Server) clientGoneLocked(c *client) {
 	s.counters.OnClientDisconnect() // nil-safe
 }
 
+// syncHoldMax は claude の同期出力（BSU..ESU）保留の安全弁。これを超えて
+// ESU が来ない場合は中間状態でも放送を再開する（claude 異常時の graceful
+// degrade。tmux の pane sync 1s タイマーと同じ規律）。
+const syncHoldMax = time.Second
+
+// syncValve は安全弁タイマー: BSU 後 syncHoldMax 経っても ESU が来ない
+// （かつ read も無い＝claude 停止）場合に、中間状態でも 1 度放送して
+// 画面が固まり続けないようにする。
+func (s *Server) syncValve() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.p.VT.SyncActive() && !s.syncStart.IsZero() {
+		s.broadcastLocked()
+	}
+}
+
 func (s *Server) masterPump() {
 	buf := make([]byte, 4096)
 	for {
@@ -191,6 +210,41 @@ func (s *Server) masterPump() {
 			s.p.VT.Feed(buf[:n])
 			s.sessionLogCaptureLocked() // 確定行をファイルへ（描画非依存）
 			s.maybeWriteStatusLocked()  // 使用量 status（5s スロットル）
+			// 一層目ダブルバッファ: claude が DECSET 2026 で宣言した
+			// 再描画（BSU..ESU）の途中はモデルが中間状態なので frame を
+			// 放送しない。ESU を含む read で完成状態を 1 frame 放送する
+			// （read 内で複数 frame が完結した場合も自然に合体）。
+			// 放送は read 契機のみ＝転送のアトミック性（RenderANSI の
+			// BSU/ESU）とは独立で、既存の描画・履歴・不変条件は無改変。
+			if s.p.VT.SyncActive() {
+				if s.syncStart.IsZero() {
+					s.syncStart = time.Now()
+					if s.syncTimer != nil {
+						s.syncTimer.Stop()
+					}
+					s.syncTimer = time.AfterFunc(syncHoldMax, s.syncValve)
+				}
+				if time.Since(s.syncStart) < syncHoldMax {
+					s.mu.Unlock()
+					if err == nil {
+						continue
+					}
+					// EOF/error で保留中: 最終状態を flush してから停止
+					// （claude が sync 途中で死んだ場合に最後の画面を残す）
+					s.mu.Lock()
+					s.broadcastLocked()
+					s.mu.Unlock()
+					s.Stop()
+					return
+				}
+				// 安全弁: ESU が来ないまま 1s 超＝中間状態でも放送継続
+			} else {
+				s.syncStart = time.Time{}
+				if s.syncTimer != nil {
+					s.syncTimer.Stop()
+					s.syncTimer = nil
+				}
+			}
 			s.broadcastLocked()
 			s.mu.Unlock()
 		}

@@ -89,3 +89,39 @@ func TestRenderANSINoCursorWhenScrolledOffViewport(t *testing.T) {
 		t.Fatalf("フレーム冒頭の cursor hide が無い: %q", string(frame))
 	}
 }
+
+// VT が claude の DECSET 2026（同期出力）を状態として追跡すること
+// （セル内容には従来どおり非影響）。実録画で on/off 遷移回数も機械確認。
+func TestVTSyncActiveTracking(t *testing.T) {
+	v := NewModel(80, 24)
+	if v.SyncActive() {
+		t.Fatal("初期状態で sync active")
+	}
+	v.Feed([]byte("\x1b[?2026h"))
+	if !v.SyncActive() {
+		t.Fatal("BSU 後に active でない")
+	}
+	v.Feed([]byte("\x1b[2J\x1b[HHello"))
+	if !v.SyncActive() {
+		t.Fatal("sync 中の描画で状態が落ちた")
+	}
+	v.Feed([]byte("\x1b[?2026l"))
+	if v.SyncActive() {
+		t.Fatal("ESU 後に active のまま")
+	}
+	// チャンク境界でシーケンスが割れても追跡できる（pend 繰越し）
+	v.Feed([]byte("\x1b[?20"))
+	v.Feed([]byte("26h"))
+	if !v.SyncActive() {
+		t.Fatal("分割 BSU を追跡できない")
+	}
+	v.Feed([]byte("\x1b[?2026;1l")) // 複数パラメータでも 2026 を拾う
+	if v.SyncActive() {
+		t.Fatal("複数パラメータ ESU を追跡できない")
+	}
+	// 他の private mode はセル/状態に無影響
+	v.Feed([]byte("\x1b[?25l\x1b[?2004h"))
+	if v.SyncActive() {
+		t.Fatal("無関係 mode で active になった")
+	}
+}

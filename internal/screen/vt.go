@@ -55,6 +55,12 @@ type VT struct {
 	osc   bool
 	csiPv bool   // CSI ? プライベート
 	pend  []byte // チャンク境界で割れた末尾(不完全 UTF-8)の繰越し
+	// claude 自身の同期出力宣言（DECSET 2026 BSU..ESU）。セル内容には
+	// 一切影響しない（従来どおり no-op）が、状態として追跡し、server が
+	// 「claude の再描画途中の中間状態を frame として放送しない」一層目
+	// ダブルバッファの判定に使う。明示プロトコル＝ヒューリスティック
+	// ではない。
+	syncActive bool
 }
 
 type pstate int
@@ -415,7 +421,16 @@ func (v *VT) csi(final byte) {
 	case 'm': // SGR（色/属性。pen を更新し以降の draw に反映）
 		v.sgr(ps)
 	case 'h', 'l', 'q', 'c', 'n', 't', 'p', ' ':
-		// モード/DA/DSR/cursor-style 等＝セル内容に非影響、無視
+		// モード/DA/DSR/cursor-style 等＝セル内容に非影響、無視。
+		// 例外: DECSET/DECRST 2026（同期出力）はセル非影響のまま
+		// 状態だけ追跡する（claude の再描画境界＝frame 放送の保留判定）。
+		if v.csiPv && (final == 'h' || final == 'l') {
+			for _, p := range ps {
+				if p == 2026 {
+					v.syncActive = final == 'h'
+				}
+			}
+		}
 	}
 	v.wrap = false
 	v.clampCursor()
@@ -517,6 +532,10 @@ func (v *VT) HistoryLines() []string {
 
 // Cursor は現在カーソル位置。
 func (v *VT) Cursor() (x, y int) { return v.cx, v.cy }
+
+// SyncActive は claude が同期出力（DECSET 2026）の BSU..ESU 区間内に
+// いるか（=画面再描画の途中で、現在のモデルは中間状態の可能性）。
+func (v *VT) SyncActive() bool { return v.syncActive }
 
 // HistLen は history.top 行数（maxlen trim 後の保持数）。
 func (v *VT) HistLen() int { return len(v.hist) }
