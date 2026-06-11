@@ -1,5 +1,17 @@
-> **STATUS UPDATE (2026-06-11 late): NEW BUG TO FILE against master's
-> MODE_SYNC.** The pane-side DECSET 2026 support in master (next-3.7,
+> **STATUS (2026-06-11): FILED AS PR — https://github.com/tmux/tmux/pull/5195**
+> (fix + repro included; branch `4noha/tmux:fix-sync-update-tty-leaks`).
+> Root causes found by -vv log tracing: (1) ESU clears MODE_SYNC before
+> pending collected items are discarded → flushed naked at end of input
+> processing (2) server_client_reset_state follows pane cursor/modes
+> after every input batch → naked cursor walk (the cursor-scatter)
+> (3) screen_redraw_draw_pane force-stops sync and draws a partially
+> updated (e.g. just-cleared) screen when a deferred redraw fires
+> mid-frame. Fixes: discard-then-stop (screen_write_end_sync) / skip
+> reset_state while MODE_SYNC / skip pane draw while MODE_SYNC.
+> Measured: naked 72% -> 0.26%, half-drawn commits 0. Local patched
+> build: /tmp/tmux-src/tmux (not installed).
+>
+> **Original note before the fix was written:** The pane-side DECSET 2026 support in master (next-3.7,
 > issue 4744) engages, but **the bulk of the post-ESU redraw is emitted
 > OUTSIDE the outer synchronized-update wrap**. Minimal repro (isolated
 > server, 12fps producer emitting `BSU 2J + 20 rows + cursor ESU`):

@@ -625,9 +625,19 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
   window 独立・ユーザー表示を妨げない）→ `select-window` → attach。
   pane が 2026 を使う窓（claude）と使わない窓（シェル等）で tmux の
   出力経路が全く違うため、**違う窓を測ると逆の結論が出る**。
-- **upstream 報告**: 高品質 minimal repro あり（/tmp/producer.sh 相当の
-  合成 producer＋script capture＋seg 解析）。issue 4744 のフォローアップ
-  として報告する価値が高い（docs/tmux-upstream-issue.md を更新済）。
+- **upstream 修正 PR 提出済: https://github.com/tmux/tmux/pull/5195**
+  （2026-06-11・fork `4noha/tmux` branch `fix-sync-update-tty-leaks`）。
+  -vv ログ追跡で**漏れは 3 経路**と確定し全て修正:
+  ① ESU が MODE_SYNC を先に落とすため保留 collect items がパース終端
+  flush で裸に出る→`screen_write_end_sync`（mode が立っているうちに
+  discard）② `server_client_reset_state` が入力バッチ毎に pane カーソル
+  /モードを naked 追従（カーソル散りの正体）→MODE_SYNC 中は skip
+  ③ `screen_redraw_draw_pane` が deferred redraw 発火時に sync を強制
+  解除し**半描画画面（2J 直後等）を atomic commit**→skip（ESU/1s timer
+  が PANE_REDRAW 再点火）。検証: 合成 producer A/B で naked 72%→
+  **0.26%**・半描画 commit 0・通常 pane/キー/窓操作 smoke 緑。パッチ版
+  バイナリ=/tmp/tmux-src/tmux（未インストール・要なら brew HEAD を
+  置換）。
 
 以下は cutover 時点の記録（背景として保持。「✅根本解決」判定は上記の
 通り訂正）:
