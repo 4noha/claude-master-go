@@ -80,6 +80,27 @@ function cmTrackScroll(s) {
   return { scrollTop: s.scrollTop, following: false };
 }
 
+// cmReconnectGate: 再接続して良いかの純粋判定（node で決定論テスト）。
+// データ線は無通信 30s で quiescence 切断される設計（near-$0）なので、
+// **閉じたら張りっぱなしに戻さない**。張り直すのは契機（Firestore push
+// ＝セッション status 変化／ユーザ入力）があった時だけ。その上で:
+//  ・CONNECTING(0)/OPEN(1) 中は張らない（多重接続は relay takeover の
+//    無駄打ち）
+//  ・失敗連打を backoff (1s×2^attempts・上限 30s) で抑える
+// s: {wsState:-1|0..3, now, lastAttemptAt, attempts}
+// 返り値: {connect, attempts}（connect 時は attempts+1。成功(onopen)で
+// 呼び元が attempts=0 に戻す）
+function cmReconnectGate(s) {
+  if (s.wsState === 0 || s.wsState === 1) {
+    return { connect: false, attempts: s.attempts };
+  }
+  const backoff = Math.min(30000, 1000 * Math.pow(2, s.attempts));
+  if (s.now - s.lastAttemptAt < backoff) {
+    return { connect: false, attempts: s.attempts };
+  }
+  return { connect: true, attempts: s.attempts + 1 };
+}
+
 // アカウント内の全コンソールを端末一覧と同じ順で平坦化（pc→session）。
 // ‹/› ボタンで前後のコンソールへ location 遷移して切り替える。
 async function buildConsoleList() {
@@ -145,16 +166,93 @@ function run() {
     fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
   term.open($("term-host"));
 
+  // ---- データ線（/ws）。quiescence（無通信 30s）でサーバ側から閉じる
+  // 設計なので、閉鎖は異常ではない。再接続は cmReconnectGate の規律で
+  // 「契機があった時だけ」: ①Firestore push（status doc 変化＝
+  // セッションが動いた） ②ユーザ入力（キー/画像）。アイドル中は接続
+  // ゼロ＝Cloud Run も温まらない（near-$0 維持のままネイティブの
+  // WatchSessions 同等の push 復帰）。
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(proto + "//" + location.host + "/ws?pc=" +
-    encodeURIComponent(pc) + "&sid=" + encodeURIComponent(sid));
-  ws.binaryType = "arraybuffer";
+  let ws = null;
+  let attempts = 0, lastAttemptAt = 0;
+  let inputQ = [], inputQBytes = 0; // 未接続中の入力（接続後に送出）
+  const QMAX = 9 << 20; // 画像 8MB + キー入力余裕
 
-  ws.onopen = () => {
-    // 固定論理サイズを **接続時 1 回だけ** 送る。以後 resize/ズーム/
-    // スクロール/URL バーで再送しない（暴走ループを断つ核心）。
-    ws.send(resizeFrame(WEB_ROWS, WEB_COLS));
-    $("stat").textContent = "接続済";
+  const wsState = () => (ws ? ws.readyState : -1);
+
+  const flushQ = () => {
+    while (inputQ.length && ws && ws.readyState === 1) {
+      const b = inputQ.shift();
+      inputQBytes -= b.length;
+      ws.send(b);
+    }
+  };
+
+  const connect = () => {
+    const sock = new WebSocket(proto + "//" + location.host + "/ws?pc=" +
+      encodeURIComponent(pc) + "&sid=" + encodeURIComponent(sid));
+    ws = sock;
+    sock.binaryType = "arraybuffer";
+    // 同期シムは **接続ごとに新規**。旧接続の取りかけ frame (acc) を
+    // 新接続のバイト列と継ぎ合わせない（frame 境界の保全）。さらに
+    // 全ハンドラを「自分が現役 (ws === sock) の時だけ」動かす＝古い
+    // 接続の遅延イベントが新しい接続へ干渉しない（relay 側 takeover
+    // 修正と同じ規律のブラウザ版）。
+    const feed = cmMakeSyncFilter((b) => term.write(b, scheduleLand));
+    sock.onopen = () => {
+      if (ws !== sock) return;
+      attempts = 0; // 成功で backoff リセット
+      // 固定論理サイズを **接続のたび 1 回だけ** 送る（完全 frame での
+      // catch-up を兼ねる）。以後 resize/ズーム/スクロール/URL バーで
+      // 再送しない（暴走ループを断つ核心）。
+      sock.send(resizeFrame(WEB_ROWS, WEB_COLS));
+      flushQ();
+      $("stat").textContent = "接続済";
+    };
+    sock.onmessage = (ev) => {
+      if (ws !== sock) return;
+      feed(new Uint8Array(ev.data));
+    };
+    sock.onclose = () => {
+      if (ws !== sock) return;
+      $("stat").textContent = "待機（更新/入力で自動再接続）";
+      // 未送出の入力が残っていれば backoff 後に自走再試行（入力を
+      // 失わない）。それ以外は push/次の入力まで張らない。
+      if (inputQ.length) setTimeout(() => requestConnect("input"), 1100);
+    };
+    sock.onerror = () => {
+      if (ws !== sock) return;
+      $("stat").textContent = "エラー（自動再接続待機）";
+    };
+  };
+
+  const requestConnect = (reason) => {
+    const r = cmReconnectGate({
+      wsState: wsState(), now: Date.now(),
+      lastAttemptAt, attempts,
+    });
+    if (!r.connect) return;
+    attempts = r.attempts;
+    lastAttemptAt = Date.now();
+    $("stat").textContent = "再接続中…（" + reason + "）";
+    connect();
+  };
+
+  // 送信（キー入力/画像）。未接続なら queue して接続を要求＝タイプ
+  // すれば線が再び開く。
+  const sendBytes = (b) => {
+    if (ws && ws.readyState === 1) {
+      ws.send(b);
+      return true;
+    }
+    if (inputQBytes + b.length > QMAX) {
+      $("stat").textContent = "未接続のため送信破棄（再接続待ち）";
+      return false;
+    }
+    inputQ.push(b);
+    inputQBytes += b.length;
+    requestConnect("input");
+    return true;
   };
   // ライブ行（カーソル行）を native スクロールで **追従し続ける**。
   // 固定 500 行グリッドより idle セッションの内容は短く、proxy は
@@ -200,19 +298,39 @@ function run() {
     const r = cmTrackScroll(stateNow("userscroll"));
     following = r.following;
   }, { passive: true });
-  // 同期更新シム（DECSET 2026）: proxy の ESC[?2026h..l フレームを 1 回の
-  // term.write に束ね、xterm.js(2026 未対応)の ESC[2J チラ見せ＝チカチカを
-  // 解消。ws メッセージ境界でマーカーが割れても carry で再結合（sync.js）。
-  const syncFeed = cmMakeSyncFilter((b) => term.write(b, scheduleLand));
-  ws.onmessage = (ev) => {
-    syncFeed(new Uint8Array(ev.data));
-  };
-  ws.onclose = () => { $("stat").textContent = "切断"; };
-  ws.onerror = () => { $("stat").textContent = "エラー"; };
+  // 初回接続（同期シム cmMakeSyncFilter は connect() 内で接続ごとに
+  // 新規生成: ws メッセージ境界でマーカーが割れても carry で再結合し、
+  // 旧接続の取りかけ frame と新接続を継ぎ合わせない）。
+  lastAttemptAt = Date.now();
+  connect();
 
-  term.onData((d) => {
-    if (ws.readyState === 1) ws.send(enc.encode(d));
-  });
+  // Firestore 更新 push: ネイティブの WatchSessions（snapshot listener）
+  // と同型。relay が cookie 認証済みオーナーへ発行する custom token
+  // （uid=cm-owner・全端末共通・rules で pcs/** read-only）で Firebase
+  // に直結し、このセッションの status doc 変化＝「セッションが動いた」
+  // を push で受けて切断中なら自動再接続する。未設定/失敗時は従来
+  // どおり（push 無し・手動リロード）に degrade。
+  (async () => {
+    try {
+      const r = await fetch("/api/fbtoken", { headers: { Accept: "application/json" } });
+      if (!r.ok) return; // 未設定（404）等 → push なしで従来動作
+      const { token, config } = await r.json();
+      const base = "https://www.gstatic.com/firebasejs/11.6.1/";
+      const [appM, authM, fsM] = await Promise.all([
+        import(base + "firebase-app.js"),
+        import(base + "firebase-auth.js"),
+        import(base + "firebase-firestore.js"),
+      ]);
+      const app = appM.initializeApp(config);
+      await authM.signInWithCustomToken(authM.getAuth(app), token);
+      const db = fsM.getFirestore(app);
+      fsM.onSnapshot(fsM.doc(db, "pcs", pc, "sessions", sid), () => {
+        requestConnect("更新push");
+      });
+    } catch (e) { /* push なしでも従来どおり動く */ }
+  })();
+
+  term.onData((d) => { sendBytes(enc.encode(d)); });
 
   // 画像送信: Blob を IMAGE フレーム(0xff 0xfd|u32 len|u8 ext|bytes)で
   // proxy へ。proxy がリモートホストのクリップボードへ載せ Ctrl+V 注入
@@ -235,8 +353,7 @@ function run() {
     fr[5] = buf.length & 0xff;
     fr[6] = code;
     fr.set(buf, 7);
-    if (ws.readyState === 1) {
-      ws.send(fr);
+    if (sendBytes(fr)) {
       $("stat").textContent = "画像を送信（リモートで Ctrl+V 注入）";
       return true;
     }

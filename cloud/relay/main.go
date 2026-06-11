@@ -48,6 +48,12 @@ func handler() http.Handler {
 			}
 			ws := web.New(rl, st, webauth.NewSigner(key),
 				clientID, allowed, nil, proj, enrollSA)
+			// Firestore 更新 push（任意）: Firebase Web config（公開
+			// JSON）。JSON は --set-env-vars を壊すため b64 で渡す。
+			if b, e := base64.StdEncoding.DecodeString(
+				os.Getenv("FIREBASE_WEB_CONFIG_B64")); e == nil && len(b) > 0 {
+				ws.SetFirebaseWebConfig(string(b))
+			}
 			mux.Handle("/", ws.Handler()) // /,/login,/auth/google,/api,/ws
 			log.Printf("web 管理 UI 有効（project=%s, allow=%s）", proj, allowed)
 			return mux

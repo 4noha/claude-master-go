@@ -40,6 +40,10 @@ type Server struct {
 	gv         webauth.GoogleVerifier
 	gcpProject string // enroll が新 PC へ渡す GCP プロジェクト
 	enrollSA   string // enroll が新 PC へ渡す SA 鍵 JSON（env 由来・任意）
+	// Firebase Web SDK 初期化 config（apiKey/projectId/appId 等の公開
+	// JSON・env 由来・任意）。設定時のみ /api/fbtoken（更新 push 用
+	// custom token 発行）が有効になる。
+	fbWebConfig string
 
 	// 目標版（最新 Release tag）。seam＝テストで GitHub に出ない。
 	latestTag func() (string, error)
@@ -88,6 +92,15 @@ func New(rl *relay.Server, st *state.Client, signer *webauth.Signer,
 		gcpProject: gcpProject, enrollSA: enrollSA}
 }
 
+// SetFirebaseWebConfig は Firestore 更新 push 用の Firebase Web config
+// （公開 JSON）を設定する。未設定なら /api/fbtoken は 404＝push 無しで
+// 従来どおり動く（任意機能・後方互換）。
+func (s *Server) SetFirebaseWebConfig(cfgJSON string) {
+	if json.Valid([]byte(cfgJSON)) {
+		s.fbWebConfig = cfgJSON
+	}
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.root)
@@ -99,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/devices", s.apiGuard(s.apiDevices))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
 	mux.HandleFunc("/api/version", s.apiGuard(s.apiVersion)) // 目標版（🟢/🔴 判定用）
+	mux.HandleFunc("/api/fbtoken", s.apiGuard(s.apiFBToken)) // Firestore push 用 custom token
 	mux.HandleFunc("/api/pc/delete", s.apiGuard(s.apiDeletePC)) // 端末ペアリング削除
 	mux.HandleFunc("/api/command", s.apiGuard(s.apiCommand))   // 遠隔命令投入（owner・POST）
 	mux.HandleFunc("/api/commands", s.apiGuard(s.apiCommands)) // 命令監査一覧（GET）
