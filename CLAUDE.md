@@ -682,7 +682,12 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
     bundled xterm.js 向けで、VS Code 本体の xterm.js は対応済み。
     端末対応は推測せず `scripts/probe-term-sync.py`（DECRQM・目視不要）
     で**機械判定する**こと。
-  - Mac Terminal.app: 未実測（probe 未実行。推定 ❌）
+  - **Mac Terminal.app: ❌ 非対応（2026-06-12 本 PC 実測）**。DECRQM
+    自体に NO-REPLY（DA1 は応答＝probe 有効）。実害も確認済: proxy
+    100% atomic＋パッチ tmux naked 0%＋sync feature 適用済の完璧な
+    ストリームでも Terminal.app が括りを無視して逐次描画＝ちらつく。
+    **tmux 閲覧に Terminal.app を使わない**（VSCode terminal/iTerm2 等
+    を使う）。tmux-wrap/tmux-render も 2026 honor 前提なので救えない。
   - 帰結: VSCode terminal で bare tmux が flicker する真因は端末では
     なく **tmux outer の 64% 裸 emit（m1 実測）**。`tmux-wrap` の
     sync-wrap（flush を 100% BSU/ESU で囲む）で構造的に塞がる。
@@ -816,7 +821,7 @@ tmux 経由の品質確保は重要。Web は borrowed PC / スマホの fallbac
 | 主作業 (VSCode 統合) | VSCode terminal (**2026 認識を DECRQM 実測済**) | **素の `tmux attach`** (tmux next-3.7 cutover 済) | ✅ 完璧 (実機確認済) |
 | 主作業 (Mac native) | iTerm2 / WezTerm / kitty / alacritty | 素の `tmux attach` | ✅ 完璧 |
 | 旧 tmux (≤3.6) しか無い PC | 任意の 2026 対応端末 | `claude-master tmux-render -t <session>` (-CC 中間層) | ✅ frame 無傷転送で完璧 (単一 pane MVP) |
-| 主作業 (macOS 同梱) | Terminal.app | probe 未実測 | ? (2026 非認識なら端末側が律速) |
+| 主作業 (macOS 同梱) | Terminal.app | **使わない**（DECRQM NO-REPLY 実測・2026 非対応＝端末側が律速で全層健全でもちらつく） | ❌ (2026-06-12 実測) |
 | pomera (改造クライアント) | 自前 firmware | 直接 | firmware 側で DECSET 2026 honor 実装すること |
 | スマホ / 借りた PC | ブラウザ | Web (https 経由) | ✅ sync.js で完全 atomic |
 
