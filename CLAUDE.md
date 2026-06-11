@@ -551,7 +551,55 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
     なく **tmux outer の 64% 裸 emit（m1 実測）**。`tmux-wrap` の
     sync-wrap（flush を 100% BSU/ESU で囲む）で構造的に塞がる。
 
-## tmux 経由ちらつき残課題と対策案（2026-06-05 時点・未着手分含む）
+## tmux 経由ちらつき: ✅ 根本解決済（2026-06-11 cutover 完了）
+
+**結論: tmux next-3.7 (master・issue 4744) が pane 側 DECSET 2026 を
+実装しており、これが探していた本質修正そのものだった。**
+
+- **真因 (3 層全て実測で確定)**: ①proxy frame は元から完璧な atomic
+  単位 (BSU+?25l+2J+全行+cursor 復元+?25h+ESU)。②tmux **3.6a は pane の
+  DECSET 2026 を input.c で一切 parse せず捨てる**＝frame 境界を破壊して
+  active pane の出力を 40-64% 裸 emit。③端末 (VSCode terminal は DECRQM
+  実測 Ps=2 で認識・iTerm2 documented) は 2026 honor 済＝悪くなかった。
+  **時間基準の外側 batch (tmux-wrap) では frame 途中に commit 境界が
+  落ちて「半分描き直しの画面」が atomic に commit される＝原理的に解決
+  不能**だった (user の「cls された状態で更新が走っていないか?」の指摘が
+  正鵠)。
+- **upstream 修正 (next-3.7・Chris Lloyd・issue 4744)**: pane BSU →
+  MODE_SYNC on (1s safety timer)・**MODE_SYNC 中は outer への
+  incremental 出力を discard**・pane ESU → PANE_REDRAW → sync wrap 済み
+  全面 redraw 1 回＝**pane frame 1 つ = outer 1 commit** (frame 境界が
+  end-to-end 保存)。
+- **A/B 実測 (実 claude proxy frame・同一 workload)**: naked 40%→**2%**
+  (残 2% は attach 初期化等の one-shot)・総 bytes 半減・実機目視で
+  「完璧に動作」確認 (VSCode terminal / iTerm2)。
+- **cutover 済 (2026-06-11)**: `brew unlink tmux && brew install tmux
+  --HEAD` (next-3.7)。旧 3.6a server kill → monitor 自己治癒が 13 窓
+  (dashboard+local6+↗remote6) を全自動再生成・cloud reconcile 無傷・
+  全 18 package テスト next-3.7 で緑。**rollback**: 3.6a keg は
+  `/opt/homebrew/Cellar/tmux/3.6a` に残置 (`brew unlink tmux && brew
+  link tmux@3.6a 相当で復帰可`)。**3.7 正式リリース後に `brew upgrade
+  tmux` で stable 復帰すること**。
+- **fallback 残置 (旧 tmux 環境用)**:
+  - `claude-master tmux-render -t <session>`: tmux -CC の %output
+    (frame 無傷) を verbatim 転送する sync.js 相当の中間層。単一 pane
+    viewer MVP。**3.6a 以前の tmux でも完璧描画**＝他 PC の tmux が
+    古い時の即効薬。
+  - `claude-master tmux-wrap -- tmux attach`: 時間基準 batch+sync-wrap。
+    frame 整列不能のため完全解消はしない (歴史的経緯で残置)。
+- **pomera firmware**: DECSET 2026 honor を実装すれば next-3.7 経由で
+  同じ恩恵 (要 firmware 側対応)。
+
+### 歴史的経緯（教訓・詳細は auto-memory 参照）
+
+L4-A' 5-iter 失敗 (推測修正の連鎖) → 巻き戻し → measurement-first 転換
+(3 経路生バイト capture / DECRQM probe / A/B 対照) で真因を 3 層に分解
+→ -CC forwarder で「frame 境界保存が解」を実証 → upstream に同設計の
+修正が既在と発見 → cutover。**「端末 capability・tmux 挙動は推測せず
+probe/capture で機械判定」が最大の教訓** (`scripts/probe-term-sync.py`
+/ `scripts/measure-render-path.sh` / `scripts/analyze-render-capture.py`)。
+
+## 旧・対策案の記録（解決済みのため参考）
 
 「どの PC からも tmux で同じ Claude Code」がプロジェクトの中核価値ゆえ、
 tmux 経由の品質確保は重要。Web は borrowed PC / スマホの fallback 路。
@@ -577,9 +625,10 @@ tmux 経由の品質確保は重要。Web は borrowed PC / スマホの fallbac
 
 | 用途 | 推奨端末 | tmux 経路 | flicker 状態 |
 |---|---|---|---|
-| 主作業 (VSCode 統合) | VSCode terminal (**2026 認識を DECRQM 実測済**) | `claude-master tmux-wrap -- tmux attach` 経由 | ✅ sync-wrap が flush を 100% BSU/ESU 化＝atomic 描画 |
-| 主作業 (Mac native) | iTerm2 / WezTerm / kitty / alacritty | 同上 (bare attach だと tmux 裸 64% で flicker する) | ✅ 同上 |
-| 主作業 (macOS 同梱) | Terminal.app | probe 未実測。`tmux-wrap` は無害なので使用可 | ? (2026 非認識なら効果は idle batch のみ) |
+| 主作業 (VSCode 統合) | VSCode terminal (**2026 認識を DECRQM 実測済**) | **素の `tmux attach`** (tmux next-3.7 cutover 済) | ✅ 完璧 (実機確認済) |
+| 主作業 (Mac native) | iTerm2 / WezTerm / kitty / alacritty | 素の `tmux attach` | ✅ 完璧 |
+| 旧 tmux (≤3.6) しか無い PC | 任意の 2026 対応端末 | `claude-master tmux-render -t <session>` (-CC 中間層) | ✅ frame 無傷転送で完璧 (単一 pane MVP) |
+| 主作業 (macOS 同梱) | Terminal.app | probe 未実測 | ? (2026 非認識なら端末側が律速) |
 | pomera (改造クライアント) | 自前 firmware | 直接 | firmware 側で DECSET 2026 honor 実装すること |
 | スマホ / 借りた PC | ブラウザ | Web (https 経由) | ✅ sync.js で完全 atomic |
 

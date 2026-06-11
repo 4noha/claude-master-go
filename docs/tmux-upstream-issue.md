@@ -1,3 +1,12 @@
+> **RESOLVED — DO NOT FILE (2026-06-11)**: The exact fix this issue
+> would have requested already exists upstream: tmux master (next-3.7)
+> implements pane-side DECSET 2026 (MODE_SYNC, from Chris Lloyd in
+> issue 4744 — "Add support for applications to use synchronized
+> output mode (DECSET 2026) to prevent screen tearing during rapid
+> updates"). Verified on real claude-master proxy frames: naked stream
+> 40% → 2%, total bytes halved, visually flicker-free. This draft is
+> kept for the measurement methodology only.
+
 # tmux 3.6 outer redraw emits ~50% of bytes outside synchronized-output block, causing flicker even with `terminal-features '*:sync'`
 
 ## Summary
