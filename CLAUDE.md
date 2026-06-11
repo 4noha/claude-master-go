@@ -677,7 +677,10 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
     proxy v0.3.1＋パッチ tmux 経由の実 claude 窓でちらつき無しを
     ユーザー確認。VSCode terminal も同日同様に実機確認＝Terminal.app
     ❌ 判定の対照実証が 2 端末で揃った）
-  - kitty/alacritty/WezTerm: ✅ native 対応（documented）
+  - kitty/alacritty: ✅ native 対応（documented）
+  - **WezTerm: ✅ 対応（2026-06-12 本 PC 実測）**。DECRQM `Ps=2`
+    （`ESC[?2026;2$y`）＝VSCode terminal と同判定。brew cask 導入済。
+    probe は `wezterm start -- zsh -c 'probe > /tmp/x'` で自動実行可。
   - **VSCode terminal: ✅ 認識する（2026-06-05 本 PC 実測。DECRQM
     `CSI ?2026$p` → `CSI ?2026;2$y`＝Ps=2 認識済）**。⚠過去の調査で
     「xterm.js は 2026 非対応（sync.js が書かれた理由）」と**未検証の
