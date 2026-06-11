@@ -91,6 +91,13 @@ func managedOnly(cfg *config.Config, ss []scanner.ClaudeSession) []scanner.Claud
 // SyncOnce は 1 回分の差分同期: 新規キー→AddWindow、消失キー→
 // RemoveWindow（Python run_loop ループ本体の tmux 部分と同一）。
 // 更新後の current（key→session）を返す。
+//
+// 自己治癒: known に居るキーでも tmux 窓が外的に消えていたら (user の
+// prefix+& / kill-window / 事故) 再 AddWindow する。known を信じ続けて
+// 窓が monitor 再起動まで永久欠落する bug の根治 (2026-06-05 実害)。
+// 窓存在は healWindowMissing で 1 回の ListWindows に集約 (毎キー
+// tmux exec しない)。[PAUSED] 等の RenameWindow は keyToWindow を
+// 追随更新する (tmux.go) ので誤検出しない。
 func SyncOnce(cfg *config.Config, mgr *tmux.Manager,
 	known map[string]scanner.ClaudeSession,
 	sessions []scanner.ClaudeSession) map[string]scanner.ClaudeSession {
@@ -100,8 +107,12 @@ func SyncOnce(cfg *config.Config, mgr *tmux.Manager,
 	for _, s := range sessions {
 		current[s.Key()] = s
 	}
+	windows, listOK := windowSet(mgr)
 	for key, s := range current {
 		if _, ok := known[key]; ok {
+			if listOK && healWindowMissing(mgr, windows, key) {
+				mgr.AddWindow(s, sockPathFor(cfg, s.Pid))
+			}
 			continue
 		}
 		mgr.AddWindow(s, sockPathFor(cfg, s.Pid)) // 管理対象＝socket あり
@@ -112,6 +123,28 @@ func SyncOnce(cfg *config.Config, mgr *tmux.Manager,
 		}
 	}
 	return current
+}
+
+// windowSet は現存 tmux 窓名の set (1 tick 1 回の ListWindows に集約)。
+// ok=false は tmux exec 失敗＝「窓ゼロ」と区別する (失敗 tick の自己
+// 治癒は skip＝全窓一斉再生成の runaway 防止)。
+func windowSet(mgr *tmux.Manager) (map[string]bool, bool) {
+	ws, err := mgr.ListWindowsErr()
+	if err != nil {
+		return nil, false
+	}
+	set := map[string]bool{}
+	for _, w := range ws {
+		set[w] = true
+	}
+	return set, true
+}
+
+// healWindowMissing は「key の窓が tmux 上に実在しない」時 true (= 再
+// AddWindow すべき)。WindowFor が空 (追跡無し) も missing 扱い。
+func healWindowMissing(mgr *tmux.Manager, windows map[string]bool, key string) bool {
+	name := mgr.WindowFor(key)
+	return name == "" || !windows[name]
 }
 
 // restoreWindows は STATUS_FILE から前回 window 名を復元（Python cmd_run
@@ -197,6 +230,7 @@ func resumeSessions(sch *ResumeScheduler, cur map[string]scanner.ClaudeSession,
 // 回す（Python run_loop 完全移植）。done が閉じたら終了。
 func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 	known := map[string]scanner.ClaudeSession{}
+	healLast := map[string]time.Time{} // 自己治癒の per-key cooldown
 	w := NewLimitWatcher(cfg)
 	sch := NewResumeScheduler(cfg.PendingFile)
 	interval := time.Duration(cfg.PollInterval) * time.Second
@@ -210,10 +244,26 @@ func RunLoop(cfg *config.Config, mgr *tmux.Manager, done <-chan struct{}) {
 		for _, s := range sessions {
 			current[s.Key()] = s
 		}
+		windows, listOK := windowSet(mgr)
 		for key, s := range current {
 			if _, ok := known[key]; !ok {
 				mgr.AddWindow(s, sockPathFor(cfg, s.Pid))
 				continue
+			}
+			// 自己治癒: 外的に kill された窓を再生成 (SyncOnce と同じ
+			// 規律。known を信じ続けて永久欠落する bug の根治)。
+			// 防護 (adversarial review 指摘):
+			//  - listOK gate: tmux exec 一時失敗を「全窓 missing」と
+			//    誤認して一斉再生成する runaway を防ぐ
+			//  - per-key cooldown (30s): 外的 rename 等で「missing に
+			//    見え続ける」病的環境でも生成は 30s に 1 窓まで＝
+			//    M8f2 級の毎 tick 増殖を構造的に bound
+			if listOK && healWindowMissing(mgr, windows, key) {
+				if time.Since(healLast[key]) >= 30*time.Second {
+					healLast[key] = time.Now()
+					fmt.Printf("[heal] 窓再生成 key=%s (外的 kill 検出)\n", key)
+					mgr.AddWindow(s, sockPathFor(cfg, s.Pid))
+				}
 			}
 			status := readSessionStatus(cfg, s.Pid)
 			// Windows は scanner が他プロセス cwd を解決できず（M8d

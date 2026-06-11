@@ -371,3 +371,60 @@ func TestRenderDashboardRemoteSection(t *testing.T) {
 		}
 	}
 }
+
+// 外的に kill された tmux 窓 (user の prefix+& / 事故) を、known に
+// 残っているキーでも次の同期で再生成する (自己治癒)。2026-06-05 に
+// 「openBSD が一覧に無い」「monitor restart まで永久欠落」として実害が
+// 出た bug の回帰検知。実 tmux 窓を実 kill して検証する (合成なし)。
+func TestSyncOnceHealsExternallyKilledWindow(t *testing.T) {
+	cfg := testCfg(t)
+	mgr, done := testMgr(t, cfg)
+	defer done()
+	// pane の即死で窓が消えると存在検証が flaky になるため remain-on-exit
+	// (pane 死亡でも窓は残る) を立てる。テスト session 限定。
+	exec.Command("tmux", "set-option", "-t", cfg.TmuxSession,
+		"remain-on-exit", "on").Run()
+	exec.Command("tmux", "set-option", "-t", cfg.TmuxSession,
+		"automatic-rename", "off").Run()
+
+	// managedOnly を通すための <pid>.sock (os.Stat できれば良い)
+	if err := os.MkdirAll(cfg.SessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := scanner.ClaudeSession{Pid: 4242, Cwd: "/tmp/cm-heal-dir"}
+	if err := os.WriteFile(
+		filepath.Join(cfg.SessionsDir, "4242.sock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1 周目: 新規キー → 窓生成
+	known := SyncOnce(cfg, mgr, map[string]scanner.ClaudeSession{},
+		[]scanner.ClaudeSession{s})
+	win := mgr.WindowFor(s.Key())
+	if win == "" || !windowExists(mgr, win) {
+		t.Fatalf("初回 AddWindow で窓が無い: %q", win)
+	}
+
+	// 外的 kill (user の prefix+& 相当)
+	exec.Command("tmux", "kill-window", "-t", cfg.TmuxSession+":"+win).Run()
+	if windowExists(mgr, win) {
+		t.Fatalf("kill-window が効いていない: %q", win)
+	}
+
+	// 2 周目: key は known に残っている → 旧コードはここで skip して
+	// 窓が永久欠落していた (この assert が旧コードで落ちることを確認済)
+	_ = SyncOnce(cfg, mgr, known, []scanner.ClaudeSession{s})
+	win2 := mgr.WindowFor(s.Key())
+	if win2 == "" || !windowExists(mgr, win2) {
+		t.Fatalf("外的 kill 後の同期で窓が再生成されない (自己治癒欠如): %q", win2)
+	}
+}
+
+func windowExists(mgr *tmux.Manager, name string) bool {
+	for _, w := range mgr.ListWindows() {
+		if w == name {
+			return true
+		}
+	}
+	return false
+}

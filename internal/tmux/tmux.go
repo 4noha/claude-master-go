@@ -98,6 +98,22 @@ func (m *Manager) ListWindows() []string {
 	return strings.Split(o, "\n")
 }
 
+// ListWindowsErr は ListWindows の error 可視版。tmux exec の一時失敗
+// (fork EAGAIN・server 再起動瞬間・socket race) を「窓ゼロ」と区別する。
+// monitor の自己治癒はこれで gate し、「list 失敗＝全窓 missing 誤認→
+// 全窓一斉再生成」の runaway を防ぐ (M8f2 の MarkedWindows と同じ規律:
+// list 失敗は error を返し『窓ゼロ』と誤認させない)。
+func (m *Manager) ListWindowsErr() ([]string, error) {
+	o, err := outErr("list-windows", "-t", m.Session, "-F", "#{window_name}")
+	if err != nil {
+		return nil, err
+	}
+	if o == "" {
+		return nil, nil
+	}
+	return strings.Split(o, "\n"), nil
+}
+
 func contains(ss []string, v string) bool {
 	for _, s := range ss {
 		if s == v {
