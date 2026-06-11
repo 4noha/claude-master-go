@@ -690,7 +690,18 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
     100% atomic＋パッチ tmux naked 0%＋sync feature 適用済の完璧な
     ストリームでも Terminal.app が括りを無視して逐次描画＝ちらつく。
     **tmux 閲覧に Terminal.app を使わない**（VSCode terminal/iTerm2 等
-    を使う）。tmux-wrap/tmux-render も 2026 honor 前提なので救えない。
+    を使う。両者で同日ちらつき無し実機確認済）。
+    **⚠回避機能の軸の整理（非対応端末は構造的に救えない）**:
+    tmux-render/tmux-wrap の fallback 軸は「**古い tmux**」であって
+    「非対応端末」ではない。①tmux-wrap の idle-batch（1 write 化）は
+    2026 非依存で確率的軽減のみ（read 境界で割れれば破綻・保証なし。
+    目視 test4 でのみ判定可） ②tmux-render は frame 内 `?25l/h` で
+    カーソル散りは止まるが、`2J` 全消去→全行再描画を honor 無しで
+    逐次 paint されると**全画面 blink になり得て素の attach より悪化
+    リスク**（表の通り「旧 tmux × 2026 対応端末」用） ③非対応端末の
+    設計上の正規ルートは **Web**（sync.js が xterm.js 側で atomic 化）。
+    paint atomicity は端末内部挙動＝機械測定不能（probe は honor 宣言
+    の有無しか測れない）。
   - 帰結: VSCode terminal で bare tmux が flicker する真因は端末では
     なく **tmux outer の 64% 裸 emit（m1 実測）**。`tmux-wrap` の
     sync-wrap（flush を 100% BSU/ESU で囲む）で構造的に塞がる。
