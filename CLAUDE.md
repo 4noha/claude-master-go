@@ -455,6 +455,28 @@ client だけ foreground で走る。**proxy 自身は self-update 反映の
   経路（`/tmp`→`/private/tmp` 等）は不一致で 30s timeout になる。実
   プロジェクトの `/Users/...` では非発生。対処するなら EvalSymlinks
   正規化（scanner は物理 path を返す）。
+- **余波: tmux 窓の頻繁な削除再生成（同夜 第二真因・解決済）**: plist
+  修正後も「活動中セッションの窓だけ 1-2 分周期で死亡→heal 再生成」が
+  継続。真因＝**tmux サーバが旧 Background monitor の子として spawn
+  され darwinbg を継承**（pri=4。plist 修正は新規プロセスにのみ有効・
+  `taskpolicy -B` でも解除不能と実測）→ 高負荷時に pane pty を 2s 内に
+  drain できず proxy の write deadline（`renderClientLocked` 2s）が
+  **その窓の client だけ選択的に切断** → socket-client は conn close
+  1 回で exit する設計（「--- Claude session ended ---」exit 0）＝窓
+  死亡 → heal 再生成。idle セッションは broadcast が稀で無事＝「活動中
+  だけ churn」の偏りが診断の鍵。**診断手法**: 窓に `remain-on-exit on`
+  を一時設定し dead pane の exit status/stderr を capture-pane で回収
+  ＋同 proxy へ手動 client（`script -q` の pty 付き）を並走させ
+  「proxy は無実・pane 経路のみ死ぬ」を分離証明＋`window_id` 追跡で
+  churn を機械検出。**修正**: `tmux kill-server` → monitor kickstart
+  ＝新 monitor（非 throttle）が新サーバを spawn（pri 4→20）。全 14 窓
+  （local 7＋remote 6＋dashboard）は自己治癒で数秒再生成・proxy/claude
+  無傷。**教訓: launchd の ProcessType 変更後は、旧デーモンが spawn
+  した長命の子（tmux サーバ等）も作り直すこと**（darwinbg は子へ遺伝
+  しプロセスが生きる限り残る）。設計メモ（未対処）: socket-client は
+  「write deadline 切断」と「セッション終了」を区別できない＝将来
+  同種の遅延があると窓 churn として再発し得る（対処案: socket-client
+  の自動再接続 or deadline 緩和。QoS 根治済のため今回は見送り）。
 
 ## 観測スタック（launchd 化・本 PC 運用）
 
