@@ -269,6 +269,28 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
     spawn/update)は全 seam＝実 Firestore エミュレータ＋fake seam で
     決定論検証（合成なし）。⚠注意: バイナリ/config はプロセス起動時のみ
     反映＝self-update/restart 後も対象は再起動で初めて新版。
+  - **relay 再接続 takeover 修正 ✅（2026-06-11・Cloud Run rev 00033）**:
+    Web「表示が壊れる」（正しい transcript に別時点 footer 断片が
+    スプライスされた合成画面のまま凍結）の真因は relay `serve` が同 sid
+    再接続（タブ再読込/‹›コンソール切替/agent 再接続）で slot を黙って
+    上書きし pump を並走させる構造: ①同じ source を 2 つの io.Copy が
+    read→32KB chunk 奪い合い＝新 viewer の stream に歯抜け（frame 中間
+    欠落） ②旧 pump 終了 cleanup が現役 conn を巻き添え close＝凍結
+    ③双方 pump の close(done) 二重実行 panic＝**relay コンテナごと落ち
+    全セッション切断**。conn 毎に読み手 1 つ（serve 自身が唯一の
+    reader）＋書き先はロック下で現役 slot 解決、へ書換。診断手順:
+    **proxy sock を Web と同条件（RESIZE 500×160）で直採取**し server
+    frame 健全（102/102 atomic・hist 汚染なし・deployed static=repo
+    一致）を先に証明→消去法で relay 層に絞り、実 WSS テストで panic
+    再現→修正（`TestViewerTakeoverKeepsStreamIntact`）。実 GCP e2e
+    （`go test -tags manual -run TestE2ERealGCP`、要 GCP_PROJECT/
+    CLOUD_RELAY_URL/GOOGLE_APPLICATION_CREDENTIALS。M7 Grant 仕様
+    追随済）で新 revision 検証緑。⚠Web 知見: 160×500 viewport は
+    1 frame≈108KB×spinner tick 12.75fps＝**1.35MiB/s**（クライアントが
+    遅いと proxy 側 2s write deadline で切断）。バンドル xterm.js は
+    DECSET 2026 非対応のまま＝sync.js の 1 emit=1 frame が原子性の砦
+    （xterm.js `_innerWrite` は chunk 単位同期 parse＝1 write 内は
+    paint 不可と minified 実コードで確認済）。
   - 稼働環境 cutover 実施済: proxy alias→Go、monitor→Go launchd
     （`~/Library/LaunchAgents/com.4noha.claude-master.plist`、KeepAlive
     自動復帰検証済）。Python 版は新規不使用（rollback 手順は会話/.bak）。
