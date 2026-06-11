@@ -1,11 +1,50 @@
-> **RESOLVED — DO NOT FILE (2026-06-11)**: The exact fix this issue
-> would have requested already exists upstream: tmux master (next-3.7)
-> implements pane-side DECSET 2026 (MODE_SYNC, from Chris Lloyd in
-> issue 4744 — "Add support for applications to use synchronized
-> output mode (DECSET 2026) to prevent screen tearing during rapid
-> updates"). Verified on real claude-master proxy frames: naked stream
-> 40% → 2%, total bytes halved, visually flicker-free. This draft is
-> kept for the measurement methodology only.
+> **STATUS UPDATE (2026-06-11 late): NEW BUG TO FILE against master's
+> MODE_SYNC.** The pane-side DECSET 2026 support in master (next-3.7,
+> issue 4744) engages, but **the bulk of the post-ESU redraw is emitted
+> OUTSIDE the outer synchronized-update wrap**. Minimal repro (isolated
+> server, 12fps producer emitting `BSU 2J + 20 rows + cursor ESU`):
+> per producer frame the outer stream is
+> `[6B naked][48B wrapped: scroll-region+S+cursor only][3600B naked:
+> the actual row repaint!][1337B wrapped]` = **72% naked**. On a real
+> client app (claude TUI), 13% naked including bare multi-CUP bursts
+> (`[4;59H[12;68H[19;20H[22;68H`) = visible cursor scatter on terminals
+> that DO honour 2026 (VSCode terminal verified honouring via a visual
+> BSU-hold test). Workaround on our side: idle-batch + re-wrap layer
+> (`tmux-wrap`) measured 0.0% naked, flush aligned 1:1 with frames.
+> The original 3.6 report below is kept for methodology/history.
+
+# (NEW, to file) master MODE_SYNC: post-ESU pane redraw partially emitted outside outer BSU/ESU wrap
+
+Repro sketch (macOS, master @ 86128a7 via Homebrew --HEAD):
+
+```sh
+cat > /tmp/producer.sh <<'EOF'
+#!/bin/sh
+while :; do
+  printf '\033[?2026h\033[?25l\033[2J\033[H'
+  i=1
+  while [ $i -le 20 ]; do
+    printf '\033[%d;1HRow %02d ====================================================' $i $i
+    i=$((i+1))
+  done
+  printf '\033[5;10H\033[?25h\033[?2026l'
+  sleep 0.08
+done
+EOF
+chmod +x /tmp/producer.sh
+tmux -L sync new-session -d -s s -x 80 -y 24 /tmp/producer.sh
+# terminal-features includes ',xterm*:sync'
+script -q /tmp/outer.raw tmux -L sync attach -t s   # detach after ~5s
+# analyze BSU/ESU coverage of /tmp/outer.raw → ~72% of bytes naked,
+# repeating pattern: small wrapped commit (scroll+cursor) then large
+# naked chunk containing the row content repaint.
+```
+
+Expected: with the new pane-2026 support, the entire per-frame redraw
+(scroll AND content) should be inside one outer BSU/ESU block.
+Observed: only the scroll/cursor portion is wrapped; the content
+repaint follows naked, so 2026-honouring outer terminals still paint
+the repaint incrementally (flicker/cursor scatter).
 
 # tmux 3.6 outer redraw emits ~50% of bytes outside synchronized-output block, causing flicker even with `terminal-features '*:sync'`
 

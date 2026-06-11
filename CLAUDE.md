@@ -596,10 +596,44 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
     なく **tmux outer の 64% 裸 emit（m1 実測）**。`tmux-wrap` の
     sync-wrap（flush を 100% BSU/ESU で囲む）で構造的に塞がる。
 
-## tmux 経由ちらつき: ✅ 根本解決済（2026-06-11 cutover 完了）
+## tmux 経由ちらつき: ⚠一部再発（next-3.7 MODE_SYNC の wrap 漏れ）
 
-**結論: tmux next-3.7 (master・issue 4744) が pane 側 DECSET 2026 を
-実装しており、これが探していた本質修正そのものだった。**
+**⚠訂正 (2026-06-11 夜・実測)**: cutover 後も claude 窓の素 attach は
+ちらつくと実報告→再計測で **tmux master (HEAD-86128a7) の pane-2026
+(MODE_SYNC) 実装が redraw 本体を outer sync wrap の外へ漏らす**バグを
+確定。「✅根本解決」の A/B (naked 2%) は**再現しない**（誤計測の疑い:
+下記「窓の取り違え」trap。pane が 2026 を使わない窓は 99% wrapped に
+なるため、carbonyl 等の窓を測ると健全に見える）。
+- **決定的データ（隔離 tmux サーバ＋合成 2026 producer・12fps）**:
+  1 frame ごとに `[6B naked][48B wrapped: scroll+cursor のみ][3600B
+  naked: 行再描画の本体!][1337B wrapped]` ＝ **naked 72%**。実 claude
+  窓では naked 13%（本文テキスト・✻ 行・`[4;59H[12;68H...` の naked
+  カーソル移動連発＝カーソル散りの正体）。**2026 honor 端末でも漏れ分
+  は即描画＝全端末でちらつく**（VSCode terminal は test4 目視で honor
+  確定済＝端末は無実）。upstream master に修正コミット無し (6/11 時点)。
+- **緩和策（実測検証済）**: `claude-master tmux-wrap -- tmux attach -t
+  claude-master` ＝ **naked 0.0%・flush が producer frame と 1:1 整列**。
+  3.6a 時代に「時間基準では frame 整列不能」だった批判は、next-3.7 の
+  出力が **frame ごとの burst**（〜80ms 間隔 ≫ idle 4ms）になったため
+  解消＝idle batch が frame 境界と自然に一致する。連続飽和ストリーム
+  時のみ MaxHold(50ms) 境界が frame 中に落ち得る（既知の限界・実
+  workload 12.75fps では非発生）。`tmux-render` も従来どおり完璧
+  （ユーザー実機確認済）。
+- **診断 trap「窓の取り違え」**: `tmux attach` での capture は
+  **session の current window** を録る。狙う窓を確実に録るには
+  `tmux new-session -t <session> -s capdiag`（grouped session＝current
+  window 独立・ユーザー表示を妨げない）→ `select-window` → attach。
+  pane が 2026 を使う窓（claude）と使わない窓（シェル等）で tmux の
+  出力経路が全く違うため、**違う窓を測ると逆の結論が出る**。
+- **upstream 報告**: 高品質 minimal repro あり（/tmp/producer.sh 相当の
+  合成 producer＋script capture＋seg 解析）。issue 4744 のフォローアップ
+  として報告する価値が高い（docs/tmux-upstream-issue.md を更新済）。
+
+以下は cutover 時点の記録（背景として保持。「✅根本解決」判定は上記の
+通り訂正）:
+
+**結論(当時): tmux next-3.7 (master・issue 4744) が pane 側 DECSET 2026
+を実装しており、これが探していた本質修正そのものだった。**
 
 - **真因 (3 層全て実測で確定)**: ①proxy frame は元から完璧な atomic
   単位 (BSU+?25l+2J+全行+cursor 復元+?25h+ESU)。②tmux **3.6a は pane の
@@ -631,7 +665,8 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
     viewer MVP。**3.6a 以前の tmux でも完璧描画**＝他 PC の tmux が
     古い時の即効薬。
   - `claude-master tmux-wrap -- tmux attach`: 時間基準 batch+sync-wrap。
-    frame 整列不能のため完全解消はしない (歴史的経緯で残置)。
+    （⚠当時の「frame 整列不能」評価は 3.6a の出力前提。next-3.7 では
+    frame ごと burst 化し整列する＝上記訂正節のとおり現役の緩和策）。
 - **pomera firmware**: DECSET 2026 honor を実装すれば next-3.7 経由で
   同じ恩恵 (要 firmware 側対応)。
 
