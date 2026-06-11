@@ -34,5 +34,5 @@ func EncodeSendKeysLiteral(target string, data []byte) string {
 // `refresh-client -C <width>,<height>` で control mode client が外側
 // 端末サイズを tmux に伝える。pane size は tmux 側で再計算される。
 func ResizeCommand(cols, rows int) string {
-	return fmt.Sprintf("refresh-client -C %d,%d", cols, rows)
+	return fmt.Sprintf("refresh-client -C %dx%d", cols, rows)
 }

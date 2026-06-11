@@ -82,6 +82,23 @@ type ExitMsg struct{ Reason string }
 
 func (*ExitMsg) msg() {}
 
+// ReplyLineMsg は %begin/%end の間に届くコマンド応答本文 (% で始まら
+// ない行)。display-message / capture-pane 等の問合せ結果の運搬用。
+// client が ParseLine=nil の非空行を包んで Events へ流す。
+type ReplyLineMsg struct{ Text string }
+
+func (*ReplyLineMsg) msg() {}
+
+// WindowPaneChangedMsg: %window-pane-changed @<win> %<pane>
+type WindowPaneChangedMsg struct{ WindowID, PaneID string }
+
+func (*WindowPaneChangedMsg) msg() {}
+
+// SessionWindowChangedMsg: %session-window-changed $<sess> @<win>
+type SessionWindowChangedMsg struct{ SessionID, WindowID string }
+
+func (*SessionWindowChangedMsg) msg() {}
+
 // OtherMsg: 上記いずれにも match しない % 行 (将来 tmux で追加された
 // msg type など)。Type は 先頭の token (例 "%window-renamed")、Rest は
 // 残り全体。
@@ -181,6 +198,26 @@ func ParseLine(line string) (Msg, error) {
 		}
 		if len(f) > 2 {
 			m.Extra = f[2]
+		}
+		return m, nil
+	case "%window-pane-changed":
+		f := strings.Fields(rest)
+		m := &WindowPaneChangedMsg{}
+		if len(f) > 0 {
+			m.WindowID = f[0]
+		}
+		if len(f) > 1 {
+			m.PaneID = f[1]
+		}
+		return m, nil
+	case "%session-window-changed":
+		f := strings.Fields(rest)
+		m := &SessionWindowChangedMsg{}
+		if len(f) > 0 {
+			m.SessionID = f[0]
+		}
+		if len(f) > 1 {
+			m.WindowID = f[1]
 		}
 		return m, nil
 	case "%exit":

@@ -48,7 +48,7 @@ func TestEncodeSendKeysLiteral_QuoteSafe(t *testing.T) {
 // TestResizeCommand: refresh-client -C <w>,<h> 形式。
 func TestResizeCommand(t *testing.T) {
 	got := ResizeCommand(120, 40)
-	want := "refresh-client -C 120,40"
+	want := "refresh-client -C 120x40"
 	if got != want {
 		t.Fatalf("resize cmd: got=%q want=%q", got, want)
 	}

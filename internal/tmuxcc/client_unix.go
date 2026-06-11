@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -103,6 +104,13 @@ func (c *Client) readLoop() {
 				c.Events <- &OtherMsg{Type: "%PARSE-ERR", Rest: perr.Error()}
 			} else if msg != nil {
 				c.Events <- msg
+			} else {
+				// 非 % 行 = %begin/%end 間のコマンド応答本文
+				// (display-message / capture-pane の結果)
+				trimmed := strings.TrimRight(line, "\r\n")
+				if trimmed != "" {
+					c.Events <- &ReplyLineMsg{Text: trimmed}
+				}
 			}
 		}
 		if err != nil {
