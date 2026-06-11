@@ -1,8 +1,12 @@
+//go:build !manual && !windows
+
 package agent
 
 // 実 Firestore エミュレータ＋fake seam（実 launchctl/自己置換しない）で
 // 命令 dispatch・多層 revocation・self-update・未配線(Phase3)を検証。
 // 合成サーバなし＝実 WatchCommands/claim/Ack 経路を通す。
+// （共有ヘルパ newState 等は agent_test.go〔!manual && !windows〕定義
+// ＝同タグで揃える。-tags manual は実 GCP e2e 専用ビルド）
 
 import (
 	"context"

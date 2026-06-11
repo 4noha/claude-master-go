@@ -63,6 +63,16 @@ func TestE2ERealGCP(t *testing.T) {
 	go ag.Run(ctx)
 	time.Sleep(2 * time.Second) // WatchWake attach（実 Firestore）
 
+	// M7 以降、公開 /session は Firestore 短命グラント必須（本番 viewer
+	// は main.go runCloudAttach が dial 前に書く＝同じ手順）。
+	stV, err := state.New(context.Background(), proj, "viewer-pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stV.Close()
+	if err := stV.PutRelayGrant(ctx, sid, "viewer", 60*time.Second); err != nil {
+		t.Fatalf("viewer grant: %v", err)
+	}
 	viewer, err := relay.Dial(ctx, wss, sid, "viewer")
 	if err != nil {
 		t.Fatalf("viewer Dial(実 Cloud Run): %v", err)
@@ -85,9 +95,7 @@ func TestE2ERealGCP(t *testing.T) {
 		}
 	}()
 
-	stB, _ := state.New(context.Background(), proj, "viewer-pc")
-	defer stB.Close()
-	if err := stB.Wake(ctx, pcID, sid); err != nil { // 実 Firestore wake
+	if err := stV.Wake(ctx, pcID, sid); err != nil { // 実 Firestore wake
 		t.Fatalf("Wake: %v", err)
 	}
 

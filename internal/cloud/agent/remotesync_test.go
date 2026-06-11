@@ -1,7 +1,8 @@
-//go:build !windows
+//go:build !manual && !windows
 
 // agent_test.go と同一の POSIX e2e スイート（共有ヘルパ projectID 等を
-// 使用）。Windows での cloud e2e は M8f。
+// 使用）。Windows での cloud e2e は M8f。-tags manual（実 GCP e2e 専用
+// ビルド）では agent_test.go のヘルパが消えるため同タグで揃える。
 package agent
 
 import (
