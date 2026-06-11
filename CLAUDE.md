@@ -635,9 +635,16 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
   ③ `screen_redraw_draw_pane` が deferred redraw 発火時に sync を強制
   解除し**半描画画面（2J 直後等）を atomic commit**→skip（ESU/1s timer
   が PANE_REDRAW 再点火）。検証: 合成 producer A/B で naked 72%→
-  **0.26%**・半描画 commit 0・通常 pane/キー/窓操作 smoke 緑。パッチ版
-  バイナリ=/tmp/tmux-src/tmux（未インストール・要なら brew HEAD を
-  置換）。
+  **0.26%**・半描画 commit 0・通常 pane/キー/窓操作 smoke 緑。
+  **パッチ版を本番投入済（2026-06-11 深夜）**: keg
+  `/opt/homebrew/Cellar/tmux/HEAD-86128a7/bin/tmux` を差し替え
+  （原本=同 dir の `tmux.orig-86128a7`・3.6a keg も残置）→ 旧 server
+  kill → monitor 自己治癒 14 窓再生成 → **実 claude 窓で naked
+  13%→0.14% を実測**。⚠macOS の罠: 既存バイナリへの上書き cp は
+  署名キャッシュ不整合で **exec が SIGKILL(exit137)**＝`rm`→`cp`
+  （新 inode）→`codesign -s - -f` が必須（OS_REASON_CODESIGNING と
+  同類）。⚠PR #5195 マージ前に `brew reinstall tmux --HEAD` を
+  実行するとパッチが消える（マージ後に実行して正規化する）。
 
 以下は cutover 時点の記録（背景として保持。「✅根本解決」判定は上記の
 通り訂正）:
