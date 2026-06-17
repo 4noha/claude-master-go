@@ -332,15 +332,14 @@ function run() {
 
   term.onData((d) => { sendBytes(enc.encode(d)); });
 
-  // 「⌃C」割り込みボタン: Ctrl-C のバイト(0x03=ETX)を入力経路へ送る。
-  // ブラウザ/OS は Ctrl+C をコピー操作に奪い、モバイルには Ctrl キーが
-  // 無いため Web からは Ctrl-C を打てない。これを専用ボタンで補う
-  // （サーバ無改変＝term.onData と同じ sendBytes 経路）。送信後は
-  // ターミナルにフォーカスを戻して続けて打てるようにする。
+  // 「Esc」中断ボタン: Esc のバイト(0x1b=ESC)を入力経路へ送る。claude の
+  // 「esc to interrupt」＝生成中断に対応。モバイルには Esc キーが無く、
+  // ブラウザでも打ちづらいので専用ボタンで補う（サーバ無改変＝term.onData
+  // と同じ sendBytes 経路）。送信後はターミナルにフォーカスを戻す。
   const intrB = $("intr");
   if (intrB) {
     intrB.onclick = () => {
-      sendBytes(new Uint8Array([0x03]));
+      sendBytes(new Uint8Array([0x1b]));
       try { term.focus(); } catch (e) { /* focus 無くても送信は成立 */ }
     };
   }

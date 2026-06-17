@@ -116,7 +116,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <span id="ctrls">
   <button class="nav" id="prev" title="前のコンソール">‹</button>
   <button class="nav" id="next" title="次のコンソール">›</button>
-  <button class="nav intr" id="intr" title="割り込み (Ctrl-C を送信)">⌃C</button>
+  <button class="nav intr" id="intr" title="中断 (Esc を送信＝claude の生成を止める)">Esc</button>
   <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
   <button class="nav" id="restart" title="このセッションを復帰(--resume で別プロセス再起動)" style="display:none">復帰</button>
   <input type="file" accept="image/*" id="imgfile" style="display:none">
