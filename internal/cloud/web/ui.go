@@ -104,6 +104,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  .nav{background:#2a2a30;color:#cde;border:0;border-radius:6px;
   padding:4px 10px;font-size:14px;cursor:pointer}
  .nav:disabled{opacity:.35;cursor:default}
+ .intr{background:#3a1f22;color:#f3b4b4;border:1px solid #5a2a2e}
  #term{position:absolute;top:34px;left:0;right:0;bottom:0}
  #term-host{width:100%;height:100%;overflow:auto;
   overscroll-behavior:contain}
@@ -115,6 +116,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <span id="ctrls">
   <button class="nav" id="prev" title="前のコンソール">‹</button>
   <button class="nav" id="next" title="次のコンソール">›</button>
+  <button class="nav intr" id="intr" title="割り込み (Ctrl-C を送信)">⌃C</button>
   <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
   <button class="nav" id="restart" title="このセッションを復帰(--resume で別プロセス再起動)" style="display:none">復帰</button>
   <input type="file" accept="image/*" id="imgfile" style="display:none">

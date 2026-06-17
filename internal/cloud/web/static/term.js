@@ -332,6 +332,19 @@ function run() {
 
   term.onData((d) => { sendBytes(enc.encode(d)); });
 
+  // 「⌃C」割り込みボタン: Ctrl-C のバイト(0x03=ETX)を入力経路へ送る。
+  // ブラウザ/OS は Ctrl+C をコピー操作に奪い、モバイルには Ctrl キーが
+  // 無いため Web からは Ctrl-C を打てない。これを専用ボタンで補う
+  // （サーバ無改変＝term.onData と同じ sendBytes 経路）。送信後は
+  // ターミナルにフォーカスを戻して続けて打てるようにする。
+  const intrB = $("intr");
+  if (intrB) {
+    intrB.onclick = () => {
+      sendBytes(new Uint8Array([0x03]));
+      try { term.focus(); } catch (e) { /* focus 無くても送信は成立 */ }
+    };
+  }
+
   // 画像送信: Blob を IMAGE フレーム(0xff 0xfd|u32 len|u8 ext|bytes)で
   // proxy へ。proxy がリモートホストのクリップボードへ載せ Ctrl+V 注入
   // で claude に添付（パス文字列では添付不可＝実機確定）。サーバ側

@@ -417,6 +417,11 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	if !strings.Contains(tb, `id="restart"`) || !strings.Contains(tb, `id="ctrls"`) {
 		t.Fatal("/term に再起動ボタン/コントロール右寄せ(#ctrls)が無い")
 	}
+	// 割り込みボタン（Ctrl-C 送信）: ブラウザ/モバイルで Ctrl-C が打てない
+	// ための専用ボタン。
+	if !strings.Contains(tb, `id="intr"`) {
+		t.Fatal("/term に割り込みボタン(#intr)が無い")
+	}
 	// 固定論理サイズ＋native スクロール設計の CSS。pull-to-refresh は
 	// document 固定＋overscroll-behavior:none、#term-host は
 	// overscroll-behavior:contain でスクロール連鎖も断つ。native
@@ -442,6 +447,8 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "clipboard.read"}, // モバイル: Clipboard API
 		{"/static/term.js", "imgfile"},        // モバイル: 写真ピッカー fallback
 		{"/static/term.js", "restart-proxy"},  // セッション再起動（/api/command 再利用）
+		{"/static/term.js", "0x03"},           // 割り込みボタン: Ctrl-C(ETX) 送信
+		{"/static/term.js", `$("intr")`},      // 割り込みボタンの配線
 		{"/static/term.js", "scrollHeight"},   // 読込時スクロール計算
 		{"/static/term.js", "cursorY"},        // ライブ行へ着地（空白回避）
 		{"/static/devices.js", "/term?pc="},
