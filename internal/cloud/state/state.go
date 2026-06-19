@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"google.golang.org/api/option"
 )
 
 type Client struct {
@@ -29,8 +30,26 @@ type Client struct {
 
 // New は projectID/pcID で Firestore クライアントを作る。
 // FIRESTORE_EMULATOR_HOST があればエミュレータへ（資格情報不要）。
+// 資格情報はプロセス global の ADC（GOOGLE_APPLICATION_CREDENTIALS）由来。
 func New(ctx context.Context, projectID, pcID string) (*Client, error) {
 	fs, err := firestore.NewClient(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{fs: fs, pcID: pcID}, nil
+}
+
+// NewWithCredentials は **クライアント個別**の SA 鍵ファイルで Firestore
+// クライアントを作る（複数クラウド fan-out 用＝1 プロセスで別 GCP
+// プロジェクト/別 SA 鍵に同時接続するため。GOOGLE_APPLICATION_CREDENTIALS
+// は global で 1 つしか持てないので option.WithCredentialsFile で個別注入）。
+// saKeyPath が空なら New と同じ（ADC/エミュレータ）＝後方互換・テスト無影響。
+func NewWithCredentials(ctx context.Context, projectID, pcID, saKeyPath string) (*Client, error) {
+	if saKeyPath == "" {
+		return New(ctx, projectID, pcID)
+	}
+	fs, err := firestore.NewClient(ctx, projectID,
+		option.WithCredentialsFile(saKeyPath))
 	if err != nil {
 		return nil, err
 	}

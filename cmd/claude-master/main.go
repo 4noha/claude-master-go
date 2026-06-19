@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -382,8 +383,27 @@ func runCloud(args []string) {
 	}
 }
 
+func fileExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func cloudsHaveProject(cs []config.Cloud, proj string) bool {
+	for _, c := range cs {
+		if c.Project == proj {
+			return true
+		}
+	}
+	return false
+}
+
 // runCloudEnroll: Web で発行した enroll コードを relay と交換し、
-// SA 鍵と設定（GCP_PROJECT/CLOUD_RELAY_URL）を自動配置する。
+// SA 鍵と設定（GCP_PROJECT/CLOUD_RELAY_URL）を自動配置する。2 つ目以降の
+// クラウド（別 Google アカウント）を enroll すると clouds.json へ追記され、
+// agent が複数クラウドへ fan-out する。
 // 使い方: claude-master cloud enroll <code> --relay wss://<host>
 func runCloudEnroll(args []string) {
 	var code, relay string
@@ -426,39 +446,67 @@ func runCloudEnroll(args []string) {
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".claude-master")
 	_ = os.MkdirAll(dir, 0o755)
-	saPath := ""
-	if b.SAJSON != "" {
-		saPath = filepath.Join(dir, "sa.json")
-		if err := os.WriteFile(saPath, []byte(b.SAJSON), 0o600); err != nil {
-			exitErr(fmt.Errorf("SA 鍵書込失敗: %w", err))
-		}
-	}
 	relayURL := b.RelayURL
 	if relayURL == "" {
 		relayURL = relay
 	}
-	if err := writeTomlKeys(filepath.Join(home, ".claude-master.toml"),
-		map[string]string{
-			"GCP_PROJECT":     b.GCPProject,
-			"CLOUD_RELAY_URL": relayURL,
-		}); err != nil {
-		exitErr(fmt.Errorf("設定書込失敗: %w", err))
-	}
-	// owner 発行コードでの正規 enroll＝再認可。過去の強制失効を解除
-	// （信頼の起点は owner 発行の一回限りコード。best-effort）。
-	if saPath != "" && b.GCPProject != "" {
-		_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", saPath)
-		cfg := config.Load()
-		if ctx, cancel := context.WithTimeout(context.Background(),
-			10*time.Second); true {
-			if est, e := state.New(ctx, b.GCPProject, cfg.PCID); e == nil {
-				_ = est.ClearRevoked(ctx, cfg.PCID)
-				est.Close()
-			}
-			cancel()
+	cfg := config.Load()
+	existing := cfg.LoadClouds()
+	// 既に clouds.json がある(複数クラウド運用)か、env 単一クラウドと別
+	// プロジェクトを enroll する場合は「クラウド追加」＝clouds.json へ。
+	// それ以外(初回 or 同一クラウド再 enroll)は従来どおり sa.json+toml
+	// ＝既存単一クラウド構成は挙動完全不変（後方互換）。
+	additional := fileExists(config.CloudsFile()) ||
+		(len(existing) > 0 && !cloudsHaveProject(existing, b.GCPProject))
+	saPath := ""
+	if b.SAJSON != "" {
+		if additional {
+			// 既存 sa.json を上書きしない per-project 鍵（GCP project ID は
+			// 小文字/数字/ハイフンのみ＝ファイル名安全）。
+			saPath = filepath.Join(dir, "sa-"+b.GCPProject+".json")
+		} else {
+			saPath = filepath.Join(dir, "sa.json")
+		}
+		if err := os.WriteFile(saPath, []byte(b.SAJSON), 0o600); err != nil {
+			exitErr(fmt.Errorf("SA 鍵書込失敗: %w", err))
 		}
 	}
-	fmt.Println("端末を登録しました（このアカウントに参加）。")
+	if additional {
+		// 2 つ目以降のクラウド: clouds.json へ追記（既存クラウドは seed で
+		// 保持＝消えない。同 project は更新）。agent は次回起動で全クラウド
+		// へ fan-out する。
+		nc := config.Cloud{Project: b.GCPProject, RelayURL: relayURL,
+			SAKeyPath: saPath, PCName: cfg.PCID}
+		if err := cfg.AppendCloud(nc, existing); err != nil {
+			exitErr(fmt.Errorf("clouds.json 書込失敗: %w", err))
+		}
+	} else {
+		// 初回(単一クラウド): 従来どおり toml に primary を記録（手動
+		// cloud attach の既定値・env 経路）。挙動不変。
+		if err := writeTomlKeys(filepath.Join(home, ".claude-master.toml"),
+			map[string]string{
+				"GCP_PROJECT":     b.GCPProject,
+				"CLOUD_RELAY_URL": relayURL,
+			}); err != nil {
+			exitErr(fmt.Errorf("設定書込失敗: %w", err))
+		}
+	}
+	// owner 発行コードでの正規 enroll＝再認可。過去の強制失効を解除
+	// （信頼の起点は owner 発行の一回限りコード。best-effort）。この
+	// クラウドの SA 鍵で接続する（global env を汚さない＝他クラウド非干渉）。
+	if saPath != "" && b.GCPProject != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if est, e := state.NewWithCredentials(ctx, b.GCPProject, cfg.PCID, saPath); e == nil {
+			_ = est.ClearRevoked(ctx, cfg.PCID)
+			est.Close()
+		}
+		cancel()
+	}
+	if additional {
+		fmt.Println("クラウドを追加しました（複数クラウドへ fan-out）。")
+	} else {
+		fmt.Println("端末を登録しました（このアカウントに参加）。")
+	}
 	fmt.Printf("  GCP_PROJECT=%s\n  CLOUD_RELAY_URL=%s\n", b.GCPProject, relayURL)
 	if saPath != "" {
 		fmt.Printf("  認証鍵: %s\n", saPath)
@@ -491,21 +539,51 @@ func writeTomlKeys(path string, kv map[string]string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
+// runCloudAgent は接続先クラウド全てへ fan-out する。clouds.json があれば
+// 複数クラウド（別 Google アカウント＝別 GCP プロジェクト/relay/SA 鍵）へ
+// 同時接続＝同じ PC のセッションを各クラウドへ push し各々の relay で
+// トンネル/コマンドを受ける。クラウド側は無改変。clouds.json が無ければ
+// 従来の単一クラウド（env）＝挙動完全不変。primary（先頭）クラウドのみ
+// remote-tmux-sync（他 PC の↗窓取り込み）を担当＝窓衝突回避。
 func runCloudAgent(cfg *config.Config) {
 	ctx, cancel := sigCtx()
 	defer cancel()
-	st, err := state.New(ctx, cfg.GCPProject, cfg.PCID)
+	clouds := cfg.LoadClouds()
+	if len(clouds) == 0 {
+		exitErr(fmt.Errorf("cloud 無効: 接続先クラウドが無い" +
+			"（GCP_PROJECT か ~/.claude-master/clouds.json）"))
+	}
+	if len(clouds) > 1 {
+		fmt.Printf("cloud agent: %d クラウドへ fan-out\n", len(clouds))
+	}
+	var wg sync.WaitGroup
+	for i, cl := range clouds {
+		wg.Add(1)
+		go func(cl config.Cloud, primary bool) {
+			defer wg.Done()
+			runOneCloud(ctx, cfg, cl, primary)
+		}(cl, i == 0)
+	}
+	wg.Wait()
+}
+
+// runOneCloud は 1 クラウドへの接続（push/relay/command）を回す。primary
+// のみ remote-tmux-sync を担当。ctx 終了で戻る。
+func runOneCloud(ctx context.Context, cfg *config.Config, cl config.Cloud, primary bool) {
+	st, err := state.NewWithCredentials(ctx, cl.Project, cl.PCName, cl.SAKeyPath)
 	if err != nil {
-		exitErr(err)
+		fmt.Fprintf(os.Stderr, "cloud[%s] 接続失敗: %v\n", cl.Project, err)
+		return
 	}
 	defer st.Close()
 	// 強制失効済なら登録しない（管理 UI で解除された端末。owner が
 	// 再 enroll するまでドーマント＝一覧にも出ない・コストも止まる）。
 	if st.IsSelfRevoked(ctx) {
-		fmt.Fprintln(os.Stderr,
-			"この端末はペアリング解除済（dormant）。再 enroll で復帰します。")
+		fmt.Fprintf(os.Stderr,
+			"cloud[%s]: この端末はペアリング解除済（dormant）。再 enroll で復帰します。\n", cl.Project)
 	} else if err := st.RegisterPCVersion(ctx, version); err != nil { // 端末一覧＋agent 版
-		exitErr(fmt.Errorf("PC 登録失敗: %w", err))
+		fmt.Fprintf(os.Stderr, "cloud[%s] PC 登録失敗: %v\n", cl.Project, err)
+		return
 	}
 	// セッション一覧をクラウドへ定期 upsert（差分は content_hash 判定）。
 	// 加えて「前 tick に在ったが今 tick に居ない」キーは DeleteSession で
@@ -557,28 +635,33 @@ func runCloudAgent(cfg *config.Config) {
 		}
 	}()
 	// 他 PC の claude セッションを this PC の tmux に窓として同期
-	// （各窓は cloud attach の再接続ループ＝viewer）。
-	if mgr, merr := tmux.NewManager(cfg.TmuxSession); merr == nil {
-		mgr.EnsureSession()
-		// dashboard が「外部 PC のセッション」も出せるよう同期側が
-		// 取得済みの一覧をスナップショット出力（Firestore 追加読み無し）。
-		agent.SnapshotPath = cfg.RemoteFile
-		self, _ := os.Executable()
-		sa := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-		wc := func(pc, sid, dir string) string {
-			// 再接続は 30s 間隔（切断時の Cloud Run 再接続＋Firestore
-			// wake 書込のコスト churn を抑制。閲覧復帰は最大 30s 遅延）。
-			// 実体は OS-split: unix=POSIX sh（M8 前とバイト同一＝parity）
-			// ／windows=PowerShell（psmux default-shell=powershell.exe。
-			// POSIX 構文だと pane が即終了→remain-on-exit off で窓が
-			// 生成直後に消滅→reconcile が毎周再作成する runaway storm の
-			// 真因だった。remotecmd_unix.go / remotecmd_windows.go）。
-			return remoteAttachCmd(self, cfg.GCPProject,
-				cfg.CloudRelayURL, sa, sid, pc)
+	// （各窓は cloud attach の再接続ループ＝viewer）。**primary クラウド
+	// のみ**が担当する＝複数クラウドが同一 tmux セッションへ↗窓を作って
+	// 衝突（同一 sid の二重窓・marker 競合）する runaway を構造的に防ぐ。
+	// push/relay/command は全クラウドで動く（他 PC を取り込むのは primary）。
+	if primary {
+		if mgr, merr := tmux.NewManager(cfg.TmuxSession); merr == nil {
+			mgr.EnsureSession()
+			// dashboard が「外部 PC のセッション」も出せるよう同期側が
+			// 取得済みの一覧をスナップショット出力（Firestore 追加読み無し）。
+			agent.SnapshotPath = cfg.RemoteFile
+			self, _ := os.Executable()
+			wc := func(pc, sid, dir string) string {
+				// 再接続は 30s 間隔（切断時の Cloud Run 再接続＋Firestore
+				// wake 書込のコスト churn を抑制。閲覧復帰は最大 30s 遅延）。
+				// 実体は OS-split: unix=POSIX sh（M8 前とバイト同一＝parity）
+				// ／windows=PowerShell（psmux default-shell=powershell.exe。
+				// POSIX 構文だと pane が即終了→remain-on-exit off で窓が
+				// 生成直後に消滅→reconcile が毎周再作成する runaway storm の
+				// 真因だった。remotecmd_unix.go / remotecmd_windows.go）。
+				// SA はこの（primary）クラウドの鍵を使う。
+				return remoteAttachCmd(self, cl.Project,
+					cl.RelayURL, cl.SAKeyPath, sid, pc)
+			}
+			go agent.RunRemoteTmuxSync(ctx, st, mgr, cl.PCName, wc)
+		} else {
+			fmt.Fprintln(os.Stderr, "remote tmux 同期スキップ（tmux 無し）:", merr)
 		}
-		go agent.RunRemoteTmuxSync(ctx, st, mgr, cfg.PCID, wc)
-	} else {
-		fmt.Fprintln(os.Stderr, "remote tmux 同期スキップ（tmux 無し）:", merr)
 	}
 	// 遠隔命令制御線（owner 限定は web 側・ここは多層防御で revocation
 	// 再検査）。WatchWake と独立の常時・無料 listener。
@@ -621,13 +704,14 @@ func runCloudAgent(cfg *config.Config) {
 	}()
 
 	ag := &agent.Agent{
-		St: st, RelayURL: cfg.CloudRelayURL,
+		St: st, RelayURL: cl.RelayURL,
 		ResolveSock: resolveSock(cfg), IdleClose: 30 * time.Second,
 	}
-	fmt.Printf("cloud agent: pc=%s project=%s relay=%s\n",
-		cfg.PCID, cfg.GCPProject, cfg.CloudRelayURL)
+	fmt.Printf("cloud agent: pc=%s project=%s relay=%s%s\n",
+		cl.PCName, cl.Project, cl.RelayURL,
+		map[bool]string{true: " (primary)", false: ""}[primary])
 	if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
-		exitErr(err)
+		fmt.Fprintf(os.Stderr, "cloud[%s] relay 終了: %v\n", cl.Project, err)
 	}
 }
 

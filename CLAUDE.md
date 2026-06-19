@@ -339,6 +339,37 @@ Python 版（`~/works/claude‐master`）の **Go 移植**。完全静的単一�
   - HOST_FLOW_SCROLLBACK は実 Claude で構造的に不完全（Python 既知制約）
     のため Go へは未移植（SESSION_LOG で代替＝描画非依存で安全）。
 
+## 複数クラウド fan-out（PC 側 agent のみ・クラウド無改変）
+
+1 台の PC（cloud agent）が**複数の独立したクラウド**（別 Google アカウント
+＝別 GCP プロジェクト/別 relay/別 SA 鍵）へ**同時接続**し、同じセッションを
+各クラウドへ push・各々の relay でトンネル/コマンド受信する。**クラウド側は
+一切改変不要**（relay/Firestore/web はそのまま＝「サーバだけの改修」）。
+
+- **設定**: `~/.claude-master/clouds.json`（`[{project, relay_url,
+  sa_key_path, pc_name?}]`）。**無ければ従来の env 単一クラウド**＝既存
+  構成は挙動完全不変（後方互換）。`config.LoadClouds()` がリスト化。
+- **認証の肝**: `GOOGLE_APPLICATION_CREDENTIALS` はプロセス global で 1 つ
+  しか持てないため、`state.NewWithCredentials(…, saKeyPath)` が
+  `option.WithCredentialsFile` で**クライアント個別に SA 鍵を注入**＝1
+  プロセスで複数 GCP プロジェクトに同時接続できる。
+- **fan-out**: `runCloudAgent` が `clouds` をループし**クラウドごとに
+  goroutine**（`runOneCloud`）。各々が RegisterPCVersion＋PushStatus ループ
+  ＋CommandRunner＋Agent.Run(relay) を回す。セッション源（STATUS_FILE 読取）
+  は共有＝同一セッションを全クラウドへ。
+- **remote-tmux-sync は primary（先頭）クラウドのみ**＝複数クラウドが同一
+  tmux セッションへ↗窓を作り同一 sid の二重窓/marker 競合する runaway を
+  構造的に防ぐ。push/relay/command は全クラウドで動く。
+- **enroll は追記**: 2 つ目以降の Google アカウントのクラウドを
+  `claude-master cloud enroll`（Web「端末を追加」経由）すると、SA を
+  `sa-<project>.json`（既存 sa.json を上書きしない）に置き、clouds.json へ
+  追記（既存クラウドを seed で保持・同 project は更新）。初回(単一)/同一
+  クラウド再 enroll は従来どおり sa.json+toml＝**byte 同一の後方互換**。
+- 検証: `config.LoadClouds`/`AppendCloud` を実 temp-HOME で機械検証
+  （env fallback・file 優先・PCName 補完・不完全除外・seed/dedupe/更新）、
+  全 18 pkg `go test` 緑・3-OS build 緑。⚠実 GCP 複数プロジェクト e2e は
+  2 つ目の GCP プロジェクト/SA 鍵が要るため要 Mac canonical（follow-up）。
+
 ## 一層目ダブルバッファ（v0.3.1・claude の DECSET 2026 honor）
 
 - **実 claude は再描画を ?2026h..?2026l で括る**（実録画 90KB 中 35 対・
