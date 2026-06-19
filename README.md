@@ -117,6 +117,50 @@ fan-out（同じセッションがどのアカウントの Web からも見え�
 | `claude-master cloud enroll <code> --relay wss://…` | Web 発行コードで設定 / SA 鍵を自動配置（2 つ目以降は `clouds.json` へ追記） |
 | `claude-master cloud attach <sid> [--pc <PC>]` | 他 PC のセッションへ接続（viewer） |
 
+### クラウド環境の構築（メンテナ・初回のみ）
+
+クラウド側は **GCP プロジェクト 1 つ**に Cloud Run relay + Firestore を
+立てるだけ（所有者の一度きり）。`gcloud auth login` 済みで:
+
+```sh
+deploy/deploy.sh <PROJECT_ID> [REGION=asia-northeast1] [SERVICE=claude-master-relay]
+```
+
+これが API 有効化 → Firestore Native DB → Artifact Registry → Cloud Build
+（`cloud/relay/Dockerfile`）→ Cloud Run デプロイ（min-instances=0 /
+timeout=3600 / allow-unauthenticated）→ relay URL 表示、までを実施します。
+`WEB_SIGNING_KEY` は `~/.claude-master/web_signing_key` に固定保持
+（cookie 署名鍵。再デプロイで変えると既存 cookie が失効）。
+
+**Web 管理 UI（Google ログイン）に必要な env**（deploy.sh が設定する
+`GCP_PROJECT`/`WEB_SIGNING_KEY` に**加えて**、初回に手動設定）:
+
+| env | 用途 |
+|-----|------|
+| `GOOGLE_OAUTH_CLIENT_ID` | Google Sign-In（GIS）の Web クライアント ID |
+| `ALLOWED_EMAILS` | ログイン許可する Google メール（カンマ区切り） |
+| `ENROLL_SA_JSON_B64` | 「端末を追加」で新 PC へ配る SA 鍵（base64） |
+| `FIREBASE_WEB_CONFIG_B64` | Firestore 更新 push 用の Firebase Web config（base64・任意） |
+
+OAuth 同意画面（External/Testing＋テストユーザー）と Web Client ID は
+GCP コンソールで一度だけ用意。Firestore 更新 push を使うなら Firebase
+有効化＋`deploy/firestore.rules` を release（`cm-owner` に `pcs/**` を
+read-only）。
+
+> ⚠ **更新（再デプロイ）は image-only で**。`deploy.sh` を再実行すると
+> `--set-env-vars` が上記 env を**消して** login/enroll/push を壊します。
+> コードだけ更新するときは env を触らずにイメージだけ差し替える:
+>
+> ```sh
+> IMG=<REGION>-docker.pkg.dev/<PROJECT>/cm/claude-master-relay
+> gcloud builds submit --project=<PROJECT> \
+>   --config deploy/cloudbuild.yaml --substitutions=_IMAGE="$IMG" .
+> gcloud run deploy claude-master-relay --project=<PROJECT> \
+>   --region=<REGION> --image="$IMG"      # --set-env-vars は付けない＝env 温存
+> ```
+
+接続する PC 側は上の「端末を追加（enroll）」だけ＝SA 鍵の手動配布不要。
+
 ## リリース（メンテナ）
 
 `.goreleaser.yaml` 同梱。`git tag vX.Y.Z && git push --tags` で CI
