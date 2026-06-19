@@ -504,12 +504,21 @@ func runCloudEnroll(args []string) {
 	}
 	if additional {
 		fmt.Println("クラウドを追加しました（複数クラウドへ fan-out）。")
+		// 既存クラウドを壊していないことを明示（新鍵は別ファイル＝既存
+		// sa.json は不変。clouds.json の全クラウドを表示して可視化）。
+		fmt.Printf("  新クラウドの鍵: %s（既存の鍵ファイルは上書きしていません）\n", saPath)
+		if cs := cfg.LoadClouds(); len(cs) > 0 {
+			fmt.Printf("  接続先クラウド %d 件:\n", len(cs))
+			for _, c := range cs {
+				fmt.Printf("    - %s  (鍵: %s)\n", c.Project, c.SAKeyPath)
+			}
+		}
 	} else {
 		fmt.Println("端末を登録しました（このアカウントに参加）。")
-	}
-	fmt.Printf("  GCP_PROJECT=%s\n  CLOUD_RELAY_URL=%s\n", b.GCPProject, relayURL)
-	if saPath != "" {
-		fmt.Printf("  認証鍵: %s\n", saPath)
+		fmt.Printf("  GCP_PROJECT=%s\n  CLOUD_RELAY_URL=%s\n", b.GCPProject, relayURL)
+		if saPath != "" {
+			fmt.Printf("  認証鍵: %s\n", saPath)
+		}
 	}
 	fmt.Println("次: `claude-master cloud agent` を起動（常駐化推奨）。" +
 		"proxy/monitor も同 PC で動かすと端末一覧にセッションが出ます。")

@@ -67,9 +67,29 @@ func (c *Config) LoadClouds() []Cloud {
 	return []Cloud{{
 		Project:   c.GCPProject,
 		RelayURL:  c.CloudRelayURL,
-		SAKeyPath: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+		SAKeyPath: defaultSAKeyPath(),
 		PCName:    c.PCID,
 	}}
+}
+
+// defaultSAKeyPath は単一クラウドの SA 鍵パスを返す。env
+// GOOGLE_APPLICATION_CREDENTIALS があればそれ、無ければ従来の既定
+// ~/.claude-master/sa.json（存在時）。enroll は対話シェルで実行され
+// env が無いことが多く、その時に既存クラウドの鍵参照を空で seed すると
+// 2 つ目追加で 1 つ目が ADC 失敗で繋がらなくなる事故を防ぐ。
+func defaultSAKeyPath() string {
+	if p := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	cand := filepath.Join(home, ".claude-master", "sa.json")
+	if _, e := os.Stat(cand); e == nil {
+		return cand
+	}
+	return ""
 }
 
 // AppendCloud は clouds.json にクラウドを追記する（project で dedupe＝

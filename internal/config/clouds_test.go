@@ -45,6 +45,32 @@ func TestLoadCloudsEnvFallback(t *testing.T) {
 	}
 }
 
+// env GOOGLE_APPLICATION_CREDENTIALS 不在でも、既定 sa.json があれば
+// それを SAKeyPath に seed する（enroll 対話シェルで env 不在でも 1 つ目
+// クラウドの鍵参照が空にならず、2 つ目追加で 1 つ目が壊れない）。
+func TestLoadCloudsSeedsDefaultSAWhenEnvEmpty(t *testing.T) {
+	home := withTempHome(t) // GOOGLE_APPLICATION_CREDENTIALS="" 済み
+	cfg := &Config{PCID: "pc1", GCPProject: "proj-a", CloudRelayURL: "wss://a"}
+	// sa.json 不在 → SAKeyPath 空（フォールバック対象が無い）
+	if cs := cfg.LoadClouds(); len(cs) != 1 || cs[0].SAKeyPath != "" {
+		t.Fatalf("sa.json 不在で SAKeyPath が空でない: %+v", cs)
+	}
+	// 既定 sa.json を置く → SAKeyPath がそれに解決
+	sa := filepath.Join(home, ".claude-master", "sa.json")
+	if err := os.WriteFile(sa, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cs := cfg.LoadClouds()
+	if len(cs) != 1 || cs[0].SAKeyPath != sa {
+		t.Fatalf("既定 sa.json が seed されない: %+v (want %s)", cs, sa)
+	}
+	// env が明示されていればそちらを優先
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/explicit/k.json")
+	if cs = cfg.LoadClouds(); cs[0].SAKeyPath != "/explicit/k.json" {
+		t.Fatalf("env 明示が優先されない: %+v", cs)
+	}
+}
+
 // clouds.json があればそれを使い、PCName 既定補完・不完全エントリ除外。
 func TestLoadCloudsFromFile(t *testing.T) {
 	withTempHome(t)
