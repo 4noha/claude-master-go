@@ -70,8 +70,31 @@ curl -fsSL https://raw.githubusercontent.com/4noha/claude-master-go/main/install
 **まとめ**: ちらつき解消は全経路で可能。tmux 3.7 なら素の attach、
 3.6 以前なら `tmux-render`、ブラウザなら Web コンソール、どれも
 ちらつきゼロ。「素の attach だけで済むか、コマンドを 1 つ覚えるか」の
-違いだけです。Homebrew なら `brew install tmux --HEAD`（3.7 リリース
-前の暫定）→ リリース後 `brew upgrade tmux` で stable へ。
+違いだけです。
+
+### tmux 3.7（RC / next-3.7）の入れ方
+
+3.7 正式版が出る前は、Homebrew の `--HEAD`（upstream **master**＝
+`next-3.7` 系列。pane DECSET 2026 本体＋MODE_SYNC リーク修正込み）を
+使います。Homebrew には「3.7-rc」専用オプションは無く、`--HEAD`=master
+が RC 相当です。
+
+```sh
+# インストール＋反映（稼働中の tmux サーバを作り直す。proxy/claude は無傷、
+# claude-master の窓は monitor が自己治癒で再生成）
+brew reinstall tmux --HEAD && tmux kill-server 2>/dev/null; \
+  launchctl kickstart -k gui/$(id -u)/com.4noha.claude-master && tmux -V
+```
+
+- `tmux -V` が `next-3.7` になれば OK。brew が署名するので手動 codesign 不要。
+- 正確に「3.7-rc タグ」を固定したい場合のみソースビルド
+  （`git clone https://github.com/tmux/tmux && git checkout <3.7-rc タグ>
+  && sh autogen.sh && ./configure && make`）。
+- ⚠ 急ぎでなければ **3.7 正式版を待って `brew upgrade tmux`** が一番
+  きれい（RC を挟まず stable へ。`--HEAD` で入れた後も upgrade で stable
+  に移行可能）。
+- Linux/他 OS は各ディストリの tmux 3.7 パッケージ、無ければ同様に
+  ソースビルド。古い tmux の PC は上記 `tmux-render` で代替。
 
 ## クラウド同期・Web 管理（任意）
 
