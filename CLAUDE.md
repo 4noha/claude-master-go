@@ -769,7 +769,19 @@ tmux を間に挟むと「中間 VT＋外側端末」の 2 層構造になり、
   window 独立・ユーザー表示を妨げない）→ `select-window` → attach。
   pane が 2026 を使う窓（claude）と使わない窓（シェル等）で tmux の
   出力経路が全く違うため、**違う窓を測ると逆の結論が出る**。
-- **upstream 修正 PR 提出済: https://github.com/tmux/tmux/pull/5195**
+- **⚠上流の決着（2026-06-20 実測）**: PR #5195 は**マージされず closed**。
+  メンテナ nicm が「issue #4983 の自分のパッチをテストして」とコメントし
+  自前修正に一本化（GitHub の merge_commit_sha はテストマージ一時 commit
+  で master と diverged＝未マージ）。**公式の漏れ修正は nicm の commit
+  `11b6e784`「When MODE_SYNC is on, all terminal updates need to be
+  deferred」(2026-06-11・issue #4983 closed)** ＝我々と同じ真因。**DEC
+  2026 本体は `1c7e164` で既に master、漏れ修正込みで 3.7-rc(2026-06-12
+  タグ)に入っている**（安定版はまだ 3.6b）。⇒ **3.7 正式リリース後に
+  `brew upgrade tmux` で公式版へ移行でき、ローカルパッチ keg
+  HEAD-86128a7 は不要になる**（それまではパッチ keg 継続でOK）。我々の
+  PR は不採用だったが調査・修正内容は upstream と同趣旨で、以下は当時の
+  記録（参考保持）:
+- **(旧)upstream 修正 PR 提出: https://github.com/tmux/tmux/pull/5195**
   （2026-06-11・fork `4noha/tmux` branch `fix-sync-update-tty-leaks`）。
   -vv ログ追跡で**漏れは 3 経路**と確定し全て修正:
   ① ESU が MODE_SYNC を先に落とすため保留 collect items がパース終端
