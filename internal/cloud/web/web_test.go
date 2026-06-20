@@ -422,6 +422,19 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 	if !strings.Contains(tb, `id="intr"`) {
 		t.Fatal("/term に割り込みボタン(#intr)が無い")
 	}
+	// フローティング操作パッド（ESC＋十字キー・移動可能）
+	if !strings.Contains(tb, `id="cmpad"`) || !strings.Contains(tb, `id="cmpad-grip"`) {
+		t.Fatal("/term にフローティング操作パッド(#cmpad/#cmpad-grip)が無い")
+	}
+	for _, k := range []string{`data-k="up"`, `data-k="down"`,
+		`data-k="left"`, `data-k="right"`, `data-k="esc"`} {
+		if !strings.Contains(tb, k) {
+			t.Fatalf("/term の操作パッドに %s が無い", k)
+		}
+	}
+	if !strings.Contains(tb, "position:fixed") {
+		t.Fatal("/term の操作パッドが position:fixed（スクロール追従）でない")
+	}
 	// 固定論理サイズ＋native スクロール設計の CSS。pull-to-refresh は
 	// document 固定＋overscroll-behavior:none、#term-host は
 	// overscroll-behavior:contain でスクロール連鎖も断つ。native
@@ -449,6 +462,9 @@ func TestAPIScopeStaticWithGoogleCookie(t *testing.T) {
 		{"/static/term.js", "restart-proxy"},  // セッション再起動（/api/command 再利用）
 		{"/static/term.js", "0x1b"},           // 中断ボタン: Esc(ESC) 送信＝claude 生成中断
 		{"/static/term.js", `$("intr")`},      // 中断ボタンの配線
+		{"/static/term.js", "PAD_KEYS"},       // 操作パッドのキー→バイト表
+		{"/static/term.js", "cm-pad-pos"},     // パッド位置の記憶(localStorage)
+		{"/static/term.js", "setPointerCapture"}, // grip ドラッグ移動
 		{"/static/term.js", "scrollHeight"},   // 読込時スクロール計算
 		{"/static/term.js", "cursorY"},        // ライブ行へ着地（空白回避）
 		{"/static/devices.js", "/term?pc="},

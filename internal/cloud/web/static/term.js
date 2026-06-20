@@ -344,6 +344,75 @@ function run() {
     };
   }
 
+  // フローティング操作パッド（ESC＋十字キー）。モバイル等で物理キーが
+  // 無くても矢印/ESC を送れる。各ボタンは sendBytes へ（term.onData と同
+  // 入力経路・サーバ無改変）。矢印は CSI 標準シーケンス（ESC[A/B/C/D。
+  // claude=Ink は CSI/SS3 両対応）。position:fixed なので native スクロール
+  // に追従し、grip ドラッグで移動・位置は localStorage に記憶する。
+  const PAD_KEYS = {
+    esc: [0x1b],
+    up: [0x1b, 0x5b, 0x41], // ESC [ A
+    down: [0x1b, 0x5b, 0x42], // ESC [ B
+    right: [0x1b, 0x5b, 0x43], // ESC [ C
+    left: [0x1b, 0x5b, 0x44], // ESC [ D
+  };
+  const pad = $("cmpad"), grip = $("cmpad-grip");
+  if (pad) {
+    pad.querySelectorAll("button[data-k]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const seq = PAD_KEYS[b.getAttribute("data-k")];
+        if (seq) {
+          sendBytes(new Uint8Array(seq));
+          try { term.focus(); } catch (e) { /* 送信は成立 */ }
+        }
+      });
+    });
+    // 位置の復元（保存済みなら left/top 絶対指定へ切替）。viewport 外に
+    // ならないよう clamp（端末回転/リサイズで枠外固定を防ぐ）。
+    const clampPad = (x, y) => [
+      Math.max(0, Math.min(x, window.innerWidth - pad.offsetWidth)),
+      Math.max(0, Math.min(y, window.innerHeight - pad.offsetHeight)),
+    ];
+    const placePad = (x, y) => {
+      const [cx, cy] = clampPad(x, y);
+      pad.style.left = cx + "px"; pad.style.top = cy + "px";
+      pad.style.right = "auto"; pad.style.bottom = "auto";
+    };
+    try {
+      const p = JSON.parse(localStorage.getItem("cm-pad-pos") || "null");
+      if (p && typeof p.left === "number") placePad(p.left, p.top);
+    } catch (e) { /* 既定の右下のまま */ }
+    // grip ドラッグで移動（pointer events＝マウス/タッチ統一）。ボタンは
+    // grip と別要素なのでタップ/ドラッグの取り違えは起きない。
+    if (grip) {
+      let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+      grip.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        try { grip.setPointerCapture(e.pointerId); } catch (er) { /* 無くても可 */ }
+        const r = pad.getBoundingClientRect();
+        ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY;
+        placePad(ox, oy); // right/bottom 指定→left/top 指定へ確定
+        e.preventDefault();
+      });
+      grip.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        placePad(ox + (e.clientX - sx), oy + (e.clientY - sy));
+      });
+      const endDrag = () => {
+        if (!dragging) return;
+        dragging = false;
+        try {
+          localStorage.setItem("cm-pad-pos", JSON.stringify({
+            left: parseInt(pad.style.left, 10),
+            top: parseInt(pad.style.top, 10),
+          }));
+        } catch (e) { /* 記憶できなくても動作は継続 */ }
+      };
+      grip.addEventListener("pointerup", endDrag);
+      grip.addEventListener("pointercancel", endDrag);
+    }
+  }
+
   // 画像送信: Blob を IMAGE フレーム(0xff 0xfd|u32 len|u8 ext|bytes)で
   // proxy へ。proxy がリモートホストのクリップボードへ載せ Ctrl+V 注入
   // で claude に添付（パス文字列では添付不可＝実機確定）。サーバ側

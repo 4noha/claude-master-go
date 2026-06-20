@@ -108,6 +108,23 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  #term{position:absolute;top:34px;left:0;right:0;bottom:0}
  #term-host{width:100%;height:100%;overflow:auto;
   overscroll-behavior:contain}
+ /* フローティング操作パッド（ESC＋十字キー）。position:fixed＝native
+    スクロールに追従（画面固定）。grip でドラッグ移動・位置は記憶。
+    touch-action:none でパッド操作中にページがスクロール/ズームしない。 */
+ #cmpad{position:fixed;right:12px;bottom:16px;z-index:50;
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:6px;background:rgba(22,22,26,.78);border:1px solid #2a2a30;
+  border-radius:12px;touch-action:none;user-select:none;
+  -webkit-user-select:none;backdrop-filter:blur(2px)}
+ #cmpad .cmrow{display:flex;gap:4px}
+ #cmpad button{width:44px;height:40px;font-size:18px;color:#cde;
+  background:#2a2a30;border:1px solid #3a3a42;border-radius:8px;
+  cursor:pointer;touch-action:none;-webkit-tap-highlight-color:transparent}
+ #cmpad button:active{background:#3a3a44}
+ #cmpad button.esc{font-size:14px;color:#f3b4b4;background:#3a1f22;
+  border-color:#5a2a2e}
+ #cmpad-grip{width:100%;text-align:center;color:#777;font-size:12px;
+  line-height:12px;cursor:move;padding:2px 0}
 </style>
 <body>
 <div id="bar">
@@ -124,6 +141,16 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  </span>
 </div>
 <div id="term"><div id="term-host"></div></div>
+<div id="cmpad" aria-label="操作パッド（ESC・十字キー）">
+ <div id="cmpad-grip" title="ドラッグで移動">⠿⠿⠿</div>
+ <div class="cmrow"><button data-k="up" aria-label="上">↑</button></div>
+ <div class="cmrow">
+  <button data-k="left" aria-label="左">←</button>
+  <button class="esc" data-k="esc" aria-label="Esc（中断）">Esc</button>
+  <button data-k="right" aria-label="右">→</button>
+ </div>
+ <div class="cmrow"><button data-k="down" aria-label="下">↓</button></div>
+</div>
 <script src="/static/xterm.js"></script>
 <script src="/static/sync.js"></script>
 <script src="/static/term.js"></script>
