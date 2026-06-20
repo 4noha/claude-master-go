@@ -80,9 +80,13 @@ curl -fsSL https://raw.githubusercontent.com/4noha/claude-master-go/main/install
 が RC 相当です。
 
 ```sh
-# インストール＋反映（稼働中の tmux サーバを作り直す。proxy/claude は無傷、
-# claude-master の窓は monitor が自己治癒で再生成）
-brew reinstall tmux --HEAD && tmux kill-server 2>/dev/null; \
+# 1) 導入: 未導入(または stable から)は install、既に --HEAD 済みを
+#    最新 master へ更新するなら upgrade（brew 6.x は reinstall に --HEAD 無し）
+brew install --HEAD tmux        # 初回 / stable → HEAD
+# brew upgrade --fetch-HEAD tmux  # 既に HEAD 導入済みを最新へ
+# 2) 反映: 稼働中の tmux サーバを作り直す（proxy/claude は無傷・
+#    claude-master の窓は monitor が自己治癒で再生成）
+tmux kill-server 2>/dev/null; \
   launchctl kickstart -k gui/$(id -u)/com.4noha.claude-master && tmux -V
 ```
 
