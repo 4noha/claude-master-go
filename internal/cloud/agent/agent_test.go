@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,10 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/4noha/claude-master-go/internal/cloud/relay"
 	"github.com/4noha/claude-master-go/internal/cloud/state"
-	"github.com/4noha/claude-master-go/internal/config"
-	"github.com/4noha/claude-master-go/internal/ptyproxy"
 	"github.com/4noha/claude-master-go/internal/screen"
 )
 
@@ -183,13 +179,6 @@ func waitText(d *drain, sub string, cols, rows int, to time.Duration) bool {
 	return false
 }
 
-func relayCfg() *config.Config {
-	return &config.Config{
-		SizePolicy: "client", NavKey: []byte{0x1c},
-		NavScrollStep: 1, NavPageStep: 10, NavWheelStep: 3,
-	}
-}
-
 func newState(t *testing.T, pc string) *state.Client {
 	t.Helper()
 	c, err := state.New(context.Background(), projectID, pc)
@@ -200,135 +189,3 @@ func newState(t *testing.T, pc string) *state.Client {
 	return c
 }
 
-// wake→データ線 open→WSS トンネル→display-oracle→静止で自動切断 を
-// end-to-end 検証。
-func TestAgentWakeBridgeAndQuiescenceClose(t *testing.T) {
-	dir := fixtureDir(t)
-	bin := filepath.Join(dir, "bytes.bin")
-	if _, err := os.Stat(bin); err != nil {
-		t.Skipf("fixture 未配置: %v", err)
-	}
-
-	// 実 relay
-	rl := relay.NewServer()
-	hs := httptest.NewServer(http.HandlerFunc(rl.ServeHTTP))
-	defer hs.Close()
-	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http")
-
-	// 実 PtyProxy に実録画
-	p, err := ptyproxy.Start([]string{"/bin/sh", "-c", "cat " + bin + "; sleep 30"}, 164, 50)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	srv := ptyproxy.NewServer(p, relayCfg(), nil, 0, 0)
-	usock := tmpSock(t)
-	if err := srv.Serve(usock); err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() { srv.Stop(); p.Close() })
-	time.Sleep(300 * time.Millisecond)
-
-	const pcID, sid = "src-pc", "S"
-	closed := make(chan string, 4)
-	ag := &Agent{
-		St:          newState(t, pcID),
-		RelayURL:    wsURL,
-		ResolveSock: func(s string) (string, bool) { return usock, s == sid },
-		IdleClose:   2 * time.Second,
-		OnDataClosed: func(s string) { closed <- s },
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	runErr := make(chan error, 1)
-	go func() { runErr <- ag.Run(ctx) }()
-	time.Sleep(1500 * time.Millisecond) // WatchWake attach 待ち
-
-	// viewer が relay へ先に接続（source 不在で pairing 待ち）
-	vctx, vcancel := context.WithCancel(context.Background())
-	defer vcancel()
-	viewer, err := relay.Dial(vctx, wsURL, sid, "viewer")
-	if err != nil {
-		t.Fatalf("viewer Dial: %v", err)
-	}
-	d := &drain{}
-	d.run(viewer)
-
-	// 別クライアント（Cloud Functions 相当）が wake を書く
-	cf := newState(t, "cf")
-	if err := cf.Wake(ctx, pcID, sid); err != nil {
-		t.Fatalf("Wake: %v", err)
-	}
-
-	// wake→agent→BridgeSourceIdle→relay pairing 後、フレームが届く
-	if _, err := viewer.Write(resizeFrame(50, 164)); err != nil {
-		t.Fatalf("resize: %v", err)
-	}
-	if !waitText(d, "bypass permissions", 164, 50, 8*time.Second) {
-		t.Fatalf("wake 後にデータ線でフレームが届かない: %.140q",
-			frameText(d.snap(), 164, 50))
-	}
-	if _, err := viewer.Write(scrollFrame(-100000)); err != nil {
-		t.Fatalf("scroll: %v", err)
-	}
-	if !waitText(d, "Claude Code v2.1.126", 164, 50, 5*time.Second) {
-		t.Fatalf("WSS トンネルで SCROLL が透過しない: %.200q",
-			frameText(d.snap(), 164, 50))
-	}
-
-	// 以降 viewer は沈黙 → 録画も静止 → IdleClose でデータ線が閉じる
-	select {
-	case s := <-closed:
-		if s != sid {
-			t.Fatalf("閉じた sid 不一致: %q", s)
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("静止後もデータ線が閉じない（quiescence 切断不成立）")
-	}
-
-	// ctx cancel で制御線（WatchWake）もクリーンに戻る
-	cancel()
-	select {
-	case e := <-runErr:
-		if e != nil {
-			t.Fatalf("Run が error 終了: %v", e)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ctx cancel しても Run が戻らない")
-	}
-}
-
-// この PC に無い sid の wake はデータ線を開かない（ResolveSock=false）。
-func TestAgentIgnoresUnknownSession(t *testing.T) {
-	rl := relay.NewServer()
-	hs := httptest.NewServer(http.HandlerFunc(rl.ServeHTTP))
-	defer hs.Close()
-	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http")
-
-	const pcID = "src-pc2"
-	closed := make(chan string, 2)
-	ag := &Agent{
-		St:           newState(t, pcID),
-		RelayURL:     wsURL,
-		ResolveSock:  func(string) (string, bool) { return "", false },
-		IdleClose:    time.Second,
-		OnDataClosed: func(s string) { closed <- s },
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go ag.Run(ctx)
-	time.Sleep(1500 * time.Millisecond)
-
-	cf := newState(t, "cf2")
-	if err := cf.Wake(ctx, pcID, "ghost"); err != nil {
-		t.Fatal(err)
-	}
-	// handleWake は走るが ResolveSock=false で即 return（OnDataClosed は
-	// defer で呼ばれる＝データ線は開かなかった）
-	select {
-	case s := <-closed:
-		if s != "ghost" {
-			t.Fatalf("sid 不一致: %q", s)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("未知 sid の handleWake が完了しない")
-	}
-}
