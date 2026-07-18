@@ -1,5 +1,25 @@
 # claude-master (Go)
 
+> ## 📦 お知らせ: 本リポジトリはメンテナンス終了 — 後継へ移行しました
+>
+> claude-master-go の役割は **herdr プラグイン
+> [herdr-drover](https://github.com/4noha/herdr-drover)** へ移行しました。
+> tmux 依存をやめ herdr（AI エージェント用ターミナルマルチプレクサ）上で動作します。
+> **今後の新規開発・保守は herdr-drover で行い、本リポジトリは更新しません。**
+>
+> - **セッション監視・自動同期・`claude` シム（自動 attach / 新 Tab 着地 /
+>   resume backstop 等）** → [herdr-drover](https://github.com/4noha/herdr-drover)
+> - **クラウド同期の実装（Cloud Run relay / Google ログイン Web / Firestore /
+>   共有 Go ライブラリ `state`・`relayclient`・`selfupdate`）** → 共通リポジトリ
+>   **[drover-cloud](https://github.com/4noha/drover-cloud)** へ切り出しました
+>   （cm のコードとバイト等価・以後はそちらが正典）。
+>
+> 稼働中の Cloud Run relay は drover-cloud のビルドへ差し替え済みで、そのまま
+> 動作します。新規に導入・構築する場合は上記 2 リポジトリを参照してください
+> （PC 側の導入は herdr-drover、クラウドを一から立てるなら drover-cloud）。
+>
+> 以下は移行前の記録として残します。
+
 Python 版 `claude-master` の Go 移植。**単一静的バイナリ**配布
 （CGO 不要・依存なし・OS/arch 横断）。設計と移植ロードマップは
 [DESIGN.md](DESIGN.md)。
